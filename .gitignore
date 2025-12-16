@@ -1,0 +1,51 @@
+__pycache__/
+output/
+*.pyc
+.env
+.venv/
+.idea/
+.vscode/
+data/
+checkpoints/
+weights/
+data/
+temp/
+*.mp4
+*.avi
+*.mov
+logs/
+uploads/    
+
+
+# Model files (lớn)
+*.pth
+*.pt
+models/*
+models/*.pth
+models/*.pt
+
+# Upload/Database folders
+uploads/
+DATABASE/
+known_persons/
+
+# Environment
+env/
+.Python
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.swp
+*.swo
+*~
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
