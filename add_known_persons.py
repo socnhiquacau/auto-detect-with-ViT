@@ -1,10 +1,18 @@
 """
-Add known persons to database from images
-Supports two folder structures:
-1. Flat: known_persons/person_name.jpg
-2. Nested: known_persons/person_name/photo1.jpg, photo2.jpg, ...
+Add known persons to database from images.
+
+This script supports two folder structures:
+1. Flat: known_persons/person_name.jpg (one image per person)
+2. Nested: known_persons/person_name/photo1.jpg, photo2.jpg, ... (multiple images per person)
+
+The script:
+- Automatically detects folder structure
+- Extracts feature vectors using ViT model
+- Averages multiple features for same person (nested structure)
+- Stores results in MongoDB
 
 Usage: python add_known_persons.py <folder_path>
+Example: python add_known_persons.py known_persons/
 """
 
 import asyncio
@@ -17,34 +25,51 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Import your feature extractor
-from feature_extractor import FeatureExtractor
+# Import DataLoader for unified model loading
+from common import DataLoader, YOLO_MODEL_PATH, VIT_MODEL_PATH
 
-# Load environment
+# Load environment variables
 load_dotenv()
 
+# =========================
+# CONFIGURATION FROM ENVIRONMENT
+# =========================
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123@localhost:27017/video_detection_db?authSource=admin")
-DATABASE_NAME = "video_detection_db"
-VIT_MODEL_PATH = os.getenv("VIT_MODEL_PATH", "models/vit_dino_feature_extractor.pth")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "video_detection_db")
 
-# Supported image extensions
+# Supported image extensions for person images
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
 
 
 class KnownPersonsManager:
-    """Manager for adding known persons from images"""
+    """
+    Manager for adding known persons to the database from image files.
+
+    Features:
+    - Supports flat and nested folder structures
+    - Extracts feature vectors using ViT model
+    - Averages multiple features per person (for nested structure)
+    - Stores normalized features in MongoDB
+    """
 
     def __init__(self, db, feature_extractor):
+        """
+        Initialize KnownPersonsManager.
+
+        Args:
+            db: Database instance for MongoDB operations
+            feature_extractor: FeatureExtractor instance for extracting vectors
+        """
         self.db = db
         self.feature_extractor = feature_extractor
         self.known_persons = db.known_persons
 
     async def add_from_folder(self, folder_path: str, structure: str = "auto"):
         """
-        Add known persons from folder
+        Add known persons from folder.
 
         Args:
-            folder_path: Path to folder containing images
+            folder_path: Path to folder containing person images
             structure: "flat", "nested", or "auto" (auto-detect)
         """
         folder = Path(folder_path)
@@ -53,7 +78,7 @@ class KnownPersonsManager:
             print(f"❌ Folder not found: {folder_path}")
             return
 
-        # Auto-detect structure
+        # Auto-detect folder structure if not specified
         if structure == "auto":
             structure = self._detect_structure(folder)
             print(f"📁 Detected structure: {structure}")
@@ -66,7 +91,12 @@ class KnownPersonsManager:
             print(f"❌ Unknown structure: {structure}")
 
     def _detect_structure(self, folder: Path) -> str:
-        """Auto-detect folder structure"""
+        """
+        Auto-detect folder structure by checking for subdirectories vs image files.
+
+        Returns:
+            "nested" if subdirectories exist, "flat" otherwise
+        """
         subdirs = [d for d in folder.iterdir() if d.is_dir()]
         image_files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS]
 
@@ -75,7 +105,7 @@ class KnownPersonsManager:
         elif image_files and not subdirs:
             return "flat"
         elif subdirs and image_files:
-            # Mixed, prefer nested
+            # Mixed structure, prefer nested
             return "nested"
         else:
             return "flat"
@@ -83,7 +113,7 @@ class KnownPersonsManager:
     async def _process_flat_structure(self, folder: Path):
         """
         Process flat structure: known_persons/person_name.jpg
-        Each image = one person
+        Each image = one person's feature vector
         """
         print("\n📂 Processing flat structure...")
         print(f"   Folder: {folder}")
@@ -111,7 +141,15 @@ class KnownPersonsManager:
     async def _process_nested_structure(self, folder: Path):
         """
         Process nested structure: known_persons/person_name/photo1.jpg, photo2.jpg
-        Multiple images per person, average their features
+
+        Algorithm:
+        1. For each person subdirectory:
+        2. Extract feature vectors from all images
+        3. Average the feature vectors to get a single representative vector
+        4. Store in database
+
+        Averaging multiple features improves robustness by capturing variations
+        in lighting, pose, and expression across multiple photos.
         """
         print("\n📂 Processing nested structure...")
         print(f"   Folder: {folder}")
@@ -171,19 +209,29 @@ class KnownPersonsManager:
         print(f"\n✅ Added {added}/{len(person_folders)} persons to database")
 
     async def _process_person_image(self, img_path: Path, person_id: str, person_name: str) -> bool:
-        """Process a single person image"""
+        """
+        Process a single person image for flat structure.
+
+        Args:
+            img_path: Path to image file
+            person_id: Unique person identifier (sanitized from name)
+            person_name: Human-readable person name
+
+        Returns:
+            True if successfully processed and saved, False otherwise
+        """
         print(f"\n👤 Processing: {person_name}")
         print(f"   Image: {img_path.name}")
 
         try:
-            # Extract feature
+            # Extract feature vector using ViT model
             feature_vector = self._extract_feature_from_file(img_path)
 
             if feature_vector is None:
                 print(f"   ❌ Failed to extract features")
                 return False
 
-            # Save to database
+            # Save person with extracted feature to database
             success = await self._save_person(person_id, person_name, feature_vector)
 
             if success:
@@ -198,30 +246,52 @@ class KnownPersonsManager:
             return False
 
     def _extract_feature_from_file(self, img_path: Path) -> np.ndarray:
-        """Extract feature vector from image file"""
-        # Read image
+        """
+        Extract feature vector from image file using ViT model.
+
+        Args:
+            img_path: Path to image file
+
+        Returns:
+            Normalized feature vector as numpy array, or None if extraction fails
+        """
+        # Read image using OpenCV (BGR format)
         image = cv2.imread(str(img_path))
 
         if image is None:
             raise Exception(f"Cannot read image: {img_path}")
 
-        # Extract feature using ViT
+        # Extract feature vector using FeatureExtractor (handles normalization)
         feature_vector = self.feature_extractor.extract(image)
 
         return feature_vector
 
     async def _save_person(self, person_id: str, person_name: str, feature_vector: np.ndarray) -> bool:
-        """Save person to database"""
+        """
+        Save person with feature vector to MongoDB database.
+
+        Uses upsert logic: creates new record if person_id doesn't exist,
+        or updates existing record (for re-processing).
+
+        Args:
+            person_id: Unique person identifier (used as primary key)
+            person_name: Human-readable person name
+            feature_vector: Normalized feature vector (L2-norm = 1)
+
+        Returns:
+            True if successful, False if database error
+        """
         try:
             person_data = {
                 "person_id": person_id,
                 "name": person_name,
-                "feature_vector": feature_vector.tolist(),
+                "feature_vector": feature_vector.tolist(),  # Convert numpy array to list for JSON storage
                 "added_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
             }
 
-            # Upsert (insert or update)
+            # Upsert: insert if new, update if exists
+            # This allows re-processing person images without duplicates
             await self.known_persons.update_one(
                 {"person_id": person_id},
                 {"$set": person_data},
@@ -287,61 +357,74 @@ async def delete_person(person_id: str):
 
 
 async def main():
-    """Main function"""
+    """
+    Main entry point for adding known persons to database.
 
+    Supports operations:
+    - add <folder>: Add persons from folder (auto-detect structure)
+    - list: List all known persons
+    - delete <person_id>: Delete a person by ID
+    """
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  Add persons from folder:")
-        print("    python add_known_persons.py <folder_path>")
-        print("")
-        print("  List known persons:")
-        print("    python add_known_persons.py --list")
-        print("")
-        print("  Delete person:")
-        print("    python add_known_persons.py --delete <person_id>")
-        print("")
-        print("Folder structures supported:")
-        print("  1. Flat: known_persons/person_name.jpg")
-        print("  2. Nested: known_persons/person_name/photo1.jpg, photo2.jpg")
+        print("  python add_known_persons.py add <folder_path>       - Add from folder")
+        print("  python add_known_persons.py list                    - List all persons")
+        print("  python add_known_persons.py delete <person_id>      - Delete person")
         return
 
-    command = sys.argv[1]
+    operation = sys.argv[1].lower()
 
-    if command == "--list":
-        await list_known_persons()
-        return
+    try:
+        if operation == "add" and len(sys.argv) >= 3:
+            folder_path = sys.argv[2]
+            await add_persons_from_folder(folder_path)
 
-    if command == "--delete":
-        if len(sys.argv) < 3:
-            print("❌ Usage: python add_known_persons.py --delete <person_id>")
-            return
-        await delete_person(sys.argv[2])
-        return
+        elif operation == "list":
+            await list_known_persons()
 
-    # Add persons from folder
-    folder_path = command
+        elif operation == "delete" and len(sys.argv) >= 3:
+            person_id = sys.argv[2]
+            await delete_person(person_id)
 
-    print("=" * 60)
-    print("Adding Known Persons to Database")
-    print("=" * 60)
+        else:
+            print(f"❌ Unknown operation: {operation}")
 
-    # Initialize feature extractor
-    print(f"\n📦 Loading ViT model...")
-    feature_extractor = FeatureExtractor(VIT_MODEL_PATH)
-    print("✅ Model loaded")
+    except KeyboardInterrupt:
+        print("\n⚠️  Interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
 
-    # Connect to database
-    print(f"\n🔗 Connecting to MongoDB...")
+
+async def add_persons_from_folder(folder_path: str):
+    """
+    Add known persons from folder to database.
+
+    Steps:
+    1. Connect to MongoDB
+    2. Initialize FeatureExtractor using DataLoader
+    3. Load images from folder
+    4. Extract features
+    5. Save to database
+
+    Args:
+        folder_path: Path to folder containing person images
+    """
+    print(f"\n🚀 Adding persons from: {folder_path}")
+
+    # Connect to MongoDB
     client = AsyncIOMotorClient(MONGODB_URL)
     db = client[DATABASE_NAME]
-    print("✅ Connected")
+
+    # Initialize DataLoader for unified model loading
+    print("📦 Initializing models...")
+    data_loader = DataLoader()
+    feature_extractor = data_loader.get_feature_extractor()
+
+    # Initialize manager
+    manager = KnownPersonsManager(db, feature_extractor)
 
     # Process folder
-    manager = KnownPersonsManager(db, feature_extractor)
-    await manager.add_from_folder(folder_path)
-
-    # Show summary
-    await list_known_persons()
+    await manager.add_from_folder(folder_path, structure="auto")
 
     client.close()
 

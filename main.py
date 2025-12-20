@@ -8,17 +8,23 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, HttpUrl
+from dotenv import load_dotenv
 
 from database import Database
 # Import processing modules
 from video_processor import VideoProcessor
 
-# Configuration
-MONGODB_URL = os.getenv("MONGODB_URL", 'mongodb://admin:admin123%20@localhost:27017/video_detection_db?authSource=admin')
-DATABASE_NAME = "video_detection_db"
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "output/detected"
-TEMP_DIR = "temp"
+# Load environment variables from .env file
+load_dotenv()
+
+# =========================
+# CONFIGURATION FROM ENVIRONMENT VARIABLES
+# =========================
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123%20@localhost:27017/video_detection_db?authSource=admin")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "video_detection_db")
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output/detected")
+TEMP_DIR = os.getenv("TEMP_DIR", "temp")
 
 # Ensure directories exist
 for dir_path in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
@@ -31,13 +37,20 @@ video_processor = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # =========================
+    # STARTUP PHASE
+    # =========================
     global db, video_processor
+
+    # Initialize MongoDB connection
     client = AsyncIOMotorClient(MONGODB_URL)
     db = Database(client[DATABASE_NAME])
+
+    # Initialize VideoProcessor with unified DataLoader for models
+    # This ensures all models are loaded from the models/ directory
     video_processor = VideoProcessor(db, OUTPUT_DIR, TEMP_DIR)
 
-    # Create database indexes
+    # Create database indexes for better query performance
     try:
         await db.create_indexes()
         print("✅ Database indexes created")
@@ -48,7 +61,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # =========================
+    # SHUTDOWN PHASE
+    # =========================
     if db:
         await db.close()
     print("👋 Shutting down...")
@@ -60,12 +75,18 @@ app = FastAPI(
 )
 
 
+# =========================
+# PYDANTIC MODELS (Request/Response Schemas)
+# =========================
+
 class VideoURLRequest(BaseModel):
+    """Request model for processing video from URL"""
     url: HttpUrl
     video_name: Optional[str] = None
 
 
 class FeatureVectorRequest(BaseModel):
+    """Request model for adding known person to database"""
     person_id: str
     feature_vector: List[float]
     name: Optional[str] = None

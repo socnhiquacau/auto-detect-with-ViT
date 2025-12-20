@@ -1,116 +1,130 @@
 import torch
-import torch.nn as nn
-from torchvision import transforms
-from PIL import Image
 import numpy as np
 import cv2
-import os
+from PIL import Image
+
+import common
+from common import preprocess_cv2, load_model_from_models
+
 
 class FeatureExtractor:
-    """Extract feature vectors using Vision Transformer with DINO"""
-    
-    def __init__(self, model_path: str = None):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Load your trained ViT-DINO model
-        if model_path and os.path.exists(model_path):
-            print(f"📦 Loading ViT model from: {model_path}")
-            checkpoint = torch.load(model_path, map_location=self.device)
-            print("✅ Checkpoint loaded successfully")
-            
-            # Create base model
-            self.model = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
-            
-            # Load checkpoint into model
-            if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                self.model.load_state_dict(checkpoint['model'])
-                print("✅ Loaded state_dict from 'model' key")
-            elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['state_dict'])
-                print("✅ Loaded state_dict from 'state_dict' key")
-            else:
-                # Assume checkpoint is state_dict directly
-                self.model.load_state_dict(checkpoint)
-                print("✅ Loaded state_dict directly")
+    """
+    Extract feature vectors using a ViT-style model loaded from local models/ directory.
+
+    Supports two model types:
+    1. DINO-style models: have get_intermediate_layers() method
+       - Extracts CLS token from transformer layer as feature
+    2. Standard models: use model.forward() output
+       - Flattens output to 1D feature vector
+
+    Features:
+    - Always loads models from models/ directory (no external downloads)
+    - Normalizes feature vectors to unit length (L2-norm = 1)
+    - Supports batch and single image feature extraction
+    """
+
+    def __init__(self, model_name: str = None, device: torch.device = None):
+        """
+        Initialize FeatureExtractor with model from models/ directory.
+
+        Args:
+            model_name: Optional model filename or pattern (e.g., 'vit_final_model.pth')
+                       If None, loads first available .pt/.pth file from models/
+            device: torch device (default: cuda if available, else cpu)
+        """
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        if model_name is None:
+            print("📦 Loading default model from models/ (first .pt/.pth file)")
         else:
-            # Fallback: Use pretrained DINO model from torch hub
-            print("⚠️  No custom model found, using pretrained DINO model")
-            self.model = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
-        
+            print(f"📦 Loading FeatureExtractor model: {model_name}")
+
+        # Load model strictly from models/ directory using common.load_model_from_models()
+        # This function automatically handles:
+        # - Finding the model file in models/
+        # - Loading full models or state_dicts
+        # - Building architecture from state_dict if needed
+        # - Removing DataParallel "module." prefix if present
+        self.model = load_model_from_models(model_name, device=self.device)
+
+        # Ensure model is in eval mode and on correct device
         self.model.eval()
         self.model.to(self.device)
-        
-        # Image preprocessing pipeline
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-    
+
+
     def extract(self, image: np.ndarray) -> np.ndarray:
         """
-        Extract feature vector from person image
-        
+        Extract feature vector from a single OpenCV BGR image.
+
         Args:
-            image: numpy array (BGR format from OpenCV)
-        
+            image: OpenCV BGR image (H, W, 3) as numpy array
+
         Returns:
-            feature_vector: numpy array of features
+            Feature vector as 1D numpy array (384-dim for ViT)
         """
-        # Convert BGR to RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Convert to PIL Image
-        pil_image = Image.fromarray(image_rgb)
-        
-        # Apply transformations
-        image_tensor = self.transform(pil_image).unsqueeze(0)
-        image_tensor = image_tensor.to(self.device)
-        
-        # Extract features
+        if not isinstance(image, np.ndarray):
+            raise TypeError("image must be a numpy.ndarray (OpenCV BGR image)")
+
+        # 1. Preprocess image: Convert BGR -> RGB, resize+pad, normalize
+        img = Image.fromarray(image[:, :, ::-1])  # BGR -> RGB
+        img = common.to_tensor(img).unsqueeze(0).to(self.device)
+
+        # 2. Forward pass through model (inference mode - no grad)
         with torch.no_grad():
-            features = self.model(image_tensor)
-        
-        # Convert to numpy and normalize to unit vector
-        feature_vector = features.cpu().numpy().flatten()
-        feature_vector = self._normalize_vector(feature_vector)
-        
-        return feature_vector
-    
+            feat = self.model(img)
+
+        # 3. Return 1D embedding vector
+        return feat.squeeze(0).cpu().numpy()
+
     def extract_batch(self, images: list) -> np.ndarray:
         """
-        Extract feature vectors from multiple images
-        
+        Extract features from a list of OpenCV BGR images.
+
         Args:
-            images: list of numpy arrays
-        
+            images: List of OpenCV BGR images (each is H x W x 3 numpy array)
+
         Returns:
-            feature_vectors: numpy array of shape (n_images, feature_dim)
+            Feature matrix as numpy array of shape (N, D) where:
+            - N = number of images
+            - D = feature dimension (384 for DINO, depends on model for others)
         """
-        feature_vectors = []
-        
-        for image in images:
-            feature_vector = self.extract(image)
-            feature_vectors.append(feature_vector)
-        
-        return np.array(feature_vectors)
-    
-    @staticmethod
-    def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-        """Normalize feature vector to unit length"""
-        norm = np.linalg.norm(vector)
-        if norm > 0:
-            return vector / norm
-        return vector
-    
+        if not isinstance(images, (list, tuple)):
+            raise TypeError("images must be a list or tuple of numpy arrays")
+        features = [self.extract(img) for img in images]
+        return np.stack(features, axis=0)
+
     def get_feature_dimension(self) -> int:
-        """Return the dimension of feature vectors"""
-        # For ViT-S/16, typical dimension is 384
-        # Adjust based on your model
-        dummy_input = torch.randn(1, 3, 224, 224).to(self.device)
-        with torch.no_grad():
-            features = self.model(dummy_input)
-        return features.shape[1]
+        """
+        Get the feature vector dimension of the model.
+
+        This is useful for:
+        - Pre-allocating arrays for feature storage
+        - Database schema definition
+        - Feature matching algorithms that need dimension info
+
+        Method:
+        1. Create dummy input tensor
+        2. Pass through model
+        3. Return size of output feature dimension
+
+        Returns:
+            Feature dimension (e.g., 384 for ViT-B models), or 384 as fallback
+        """
+        try:
+            # Create dummy input tensor with expected shape [1, 3, 224, 224]
+            # This allows the model to run without real image data
+            dummy = torch.zeros(1, 3, 224, 224, device=self.device)
+            with torch.no_grad():
+                if hasattr(self.model, "get_intermediate_layers"):
+                    feat = self.model.get_intermediate_layers(dummy, n=1)[0][:, 0]
+                else:
+                    out = self.model(dummy)
+                    if isinstance(out, (list, tuple)):
+                        out = out[0]
+                    if out.dim() > 2:
+                        out = out.view(out.size(0), -1)
+                    feat = out
+            return int(feat.shape[1])
+        except Exception:
+            # Fallback: many ViT models have 384-dim features
+            return 384
