@@ -20,7 +20,8 @@ load_dotenv()
 # =========================
 # CONFIGURATION FROM ENVIRONMENT VARIABLES
 # =========================
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123%20@localhost:27017/video_detection_db?authSource=admin")
+# MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123@127.0.0.1:27018/video_detection_db?authSource=admin")
+MONGODB_URL = "mongodb://admin:admin123@127.0.0.1:27017/video_detection_db?authSource=admin"
 DATABASE_NAME = os.getenv("DATABASE_NAME", "video_detection_db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output/detected")

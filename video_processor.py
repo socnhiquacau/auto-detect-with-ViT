@@ -1,3 +1,5 @@
+import traceback
+
 import cv2
 import numpy as np
 import torch
@@ -188,61 +190,63 @@ class VideoProcessor:
         print(f"✅ Processing complete: {len(detections)} detections")
         
         return result
-    
+
     async def _process_detection(
-        self,
-        frame: np.ndarray,
-        box,
-        video_id: str,
-        video_name: str,
-        timestamp: float,
-        frame_number: int,
-        detection_index: int
+            self,
+            frame: np.ndarray,
+            box,
+            video_id: str,
+            video_name: str,
+            timestamp: float,
+            frame_number: int,
+            detection_index: int
     ) -> Dict:
-        """
-        Process a single person detection:
-        1. Extract bounding box coordinates
-        2. Crop person image from frame
-        3. Extract feature vector using ViT model
-        4. Match features against known persons in database
-        5. Save detection crop and metadata to database
 
-        Args:
-            frame: OpenCV BGR frame from video
-            box: YOLO detection box object with coordinates and confidence
-            video_id: Unique video identifier
-            video_name: Human-readable video name
-            timestamp: Timestamp in video when detection occurred
-            frame_number: Frame number in original video
-            detection_index: Index of this detection in extraction batch
+        # ========== 1. Extract bbox ==========
+        xyxy = box.xyxy[0]
+        coords = xyxy.detach().cpu().numpy() if hasattr(xyxy, "cpu") else np.array(xyxy)
+        x1, y1, x2, y2 = map(int, coords)
 
-        Returns:
-            Dictionary with detection metadata and similarity scores
-        """
+        h, w = frame.shape[:2]
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None  # ❗ bỏ detection lỗi
 
-        # Extract bounding box coordinates from YOLO detection
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        confidence = float(box.conf[0])
-        
-        # Crop person region from frame for feature extraction
+        confidence = float(box.conf[0].item())
+
+        # ========== 2. Crop person ==========
         person_img = frame[y1:y2, x1:x2]
-        
-        # Step 1: Extract feature vector using ViT model
-        # This produces a normalized 384-dimensional feature vector (or based on model output)
-        # representing the visual characteristics of the detected person
-        feature_vector = self.feature_extractor.extract(person_img)
+        if person_img.size == 0:
+            return None
 
-        # Step 2: Compare with known persons in database to find best match
-        # Uses cosine similarity to measure distance between feature vectors
-        match_result = await self._find_matching_person(feature_vector)
-        
-        # Save detected frame
+        # ========== 3. Extract feature (SAFE) ==========
+        with torch.no_grad():
+            feat = self.feature_extractor.extract(person_img)
+
+        if feat is None:
+            return None
+
+        if isinstance(feat, torch.Tensor):
+            feat = feat.detach().cpu().numpy()
+        elif isinstance(feat, list):
+            feat = np.array(feat, dtype=np.float32)
+        else:
+            feat = np.asarray(feat, dtype=np.float32)
+
+        feat = feat.flatten()
+        if feat.size == 0:
+            return None
+
+        # ========== 4. Matching ==========
+        match_result = await self._find_matching_person(feat)
+
+        # ========== 5. Save image ==========
         detection_id = str(uuid.uuid4())
         frame_filename = f"{video_id}_{detection_index}_{detection_id}.jpg"
         frame_path = os.path.join(self.output_dir, frame_filename)
         cv2.imwrite(frame_path, person_img)
-        
-        # Prepare detection result
+
         detection = {
             "detection_id": detection_id,
             "video_id": video_id,
@@ -250,81 +254,58 @@ class VideoProcessor:
             "frame_number": frame_number,
             "timestamp": timestamp,
             "bounding_box": {
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
+                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                 "width": x2 - x1,
                 "height": y2 - y1
             },
             "confidence": confidence,
-            "feature_vector": feature_vector.tolist(),
+            "feature_vector": feat.tolist(),  # 1 vector cho detection
             "saved_frame_path": frame_path,
-            "is_known": match_result["is_known"],
+            "is_known": match_result.get("is_known", False),
             "matched_person_id": match_result.get("person_id"),
             "matched_person_name": match_result.get("person_name"),
             "similarity_score": match_result.get("similarity_score"),
             "detected_at": datetime.now().isoformat()
         }
-        
-        # Step 8: Save to MongoDB
-        await self.db.save_detection(detection)
-        
+
+        try:
+            await self.db.save_detection(detection)
+        except Exception as e:
+            print(f"⚠️ DB save failed: {e}")
+
         return detection
-    
+
     async def _find_matching_person(self, feature_vector: np.ndarray) -> Dict:
-        """
-        Find the best matching known person by comparing feature vectors.
-
-        Algorithm:
-        1. Retrieve all known persons from database
-        2. For each known person, calculate cosine similarity between their stored feature vector
-           and the detected person's feature vector
-        3. Track the person with highest similarity score
-        4. If best similarity exceeds threshold, return match; otherwise return unknown
-
-        Cosine Similarity: measures the angle between two vectors. Values range from -1 to 1,
-        where 1 means identical vectors, 0 means orthogonal, and -1 means opposite directions.
-        For normalized feature vectors (L2-norm = 1), cosine similarity equals dot product.
-
-        Args:
-            feature_vector: Normalized feature vector from ViT model
-
-        Returns:
-            Dictionary with match results:
-            - is_known: bool indicating if match was found above threshold
-            - person_id, person_name, similarity_score: populated if is_known=True
-        """
         known_persons = await self.db.get_all_known_persons()
-        
-        if not known_persons:
+
+        if not known_persons or feature_vector.size == 0:
             return {"is_known": False}
-        
+
         best_match = None
-        best_similarity = -1
-        
-        # Compare against all known persons to find best match
+        best_similarity = -1.0
+
         for person in known_persons:
-            stored_vector = np.array(person["feature_vector"])
-            
-            # Calculate cosine similarity between detected and stored vectors
-            similarity = self._cosine_similarity(feature_vector, stored_vector)
-            
-            # Update best match if this person has higher similarity
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = person
-        
-        # Verify that best match exceeds the recognition threshold
-        # This prevents false positives from low-quality detections
-        if best_similarity >= self.known_person_threshold and best_match is not None:
+            feature_list = person.get("feature_vectors", [])
+            if not feature_list:
+                continue
+
+            for stored_vec in feature_list:
+                stored_vec = np.array(stored_vec, dtype=np.float32)
+
+                similarity = self._cosine_similarity(feature_vector, stored_vec)
+
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = person
+
+        if best_match and best_similarity >= self.known_person_threshold:
             return {
                 "is_known": True,
                 "person_id": best_match["person_id"],
                 "person_name": best_match.get("name", "Unknown"),
                 "similarity_score": float(best_similarity)
             }
-        
+
         return {"is_known": False}
     
     @staticmethod

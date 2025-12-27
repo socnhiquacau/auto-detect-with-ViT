@@ -427,6 +427,7 @@ class DataLoader:
             print(f"📦 Loading FeatureExtractor with model: {model_to_load}")
             self._feature_extractor = FeatureExtractor(
                 model_name=model_to_load,
+
                 device=self.device
             )
             print("✅ FeatureExtractor loaded successfully")

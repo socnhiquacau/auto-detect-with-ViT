@@ -8,23 +8,31 @@ class ImageEnhancer:
     def __init__(self):
         # CLAHE parameters
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        
+
+    def _gamma_correct(self, img: np.ndarray, gamma=1.2):
+        """Apply gamma correction to the image"""
+        inv = 1.0 / gamma
+        table = np.array([(i / 255.0) ** inv * 255 for i in range(256)]).astype("uint8")
+        return cv2.LUT(img, table)
+
     def enhance(self, image: np.ndarray) -> np.ndarray:
         """Apply all enhancement techniques to the image"""
+
+        gamma_corrected = self._gamma_correct(image, gamma=1.2)
+
+        # # 1. Denoise - Bilateral filter (preserves edges)
+        # denoised = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+        #
+        # # 2. Balance brightness
+        # balanced = self._balance_brightness(denoised)
+        #
+        # # 3. Enhance contrast with CLAHE
+        # enhanced = self._apply_clahe(balanced)
+        #
+        # # 4. Sharpen
+        # sharpened = self._sharpen(enhanced)
         
-        # 1. Denoise - Bilateral filter (preserves edges)
-        denoised = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
-        
-        # 2. Balance brightness
-        balanced = self._balance_brightness(denoised)
-        
-        # 3. Enhance contrast with CLAHE
-        enhanced = self._apply_clahe(balanced)
-        
-        # 4. Sharpen
-        sharpened = self._sharpen(enhanced)
-        
-        return sharpened
+        return gamma_corrected
     
     def _balance_brightness(self, image: np.ndarray) -> np.ndarray:
         """Balance brightness for over/underexposed images"""
@@ -88,3 +96,27 @@ class ImageEnhancer:
             cv2.THRESH_BINARY, 11, 2
         )
         return cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR)
+
+
+# -------------------------
+# Convenience API
+# -------------------------
+# Provide a simple module-level function `enhance(img)` so older code that calls
+# `image_enhancement.enhance(img)` continues to work. The implementation uses a
+# module-level singleton `ImageEnhancer` to avoid re-instantiation overhead.
+#
+# Bilingual comment:
+# EN: Call `image_enhancement.enhance(img)` for a quick enhancement pipeline.
+# VI: Gọi `image_enhancement.enhance(img)` để xử lý ảnh một cách đơn giản.
+
+_default_enhancer = ImageEnhancer()
+
+def enhance(image: np.ndarray) -> np.ndarray:
+    """Convenience wrapper around ImageEnhancer.enhance
+
+    Args:
+        image: OpenCV BGR image (numpy.ndarray)
+    Returns:
+        Enhanced image (same type as input)
+    """
+    return _default_enhancer.enhance(image)

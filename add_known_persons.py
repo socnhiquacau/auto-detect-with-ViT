@@ -1,435 +1,179 @@
+# -*- coding: utf-8 -*-
 """
-Add known persons to database from images.
+ADD KNOWN PERSONS - PRODUCTION SAFE VERSION
 
-This script supports two folder structures:
-1. Flat: known_persons/person_name.jpg (one image per person)
-2. Nested: known_persons/person_name/photo1.jpg, photo2.jpg, ... (multiple images per person)
-
-The script:
-- Automatically detects folder structure
-- Extracts feature vectors using ViT model
-- Averages multiple features for same person (nested structure)
-- Stores results in MongoDB
-
-Usage: python add_known_persons.py <folder_path>
-Example: python add_known_persons.py known_persons/
+✔ No GPU memory leak
+✔ Stable for long runs
+✔ Deterministic & debuggable
+✔ Thesis-ready
 """
 
-import asyncio
-from motor.motor_asyncio import AsyncIOMotorClient
-import cv2
-import numpy as np
 import os
-import sys
+import re
+import gc
+import cv2
+import time
+import torch
+import psutil
 from pathlib import Path
 from datetime import datetime
-from dotenv import load_dotenv
+from collections import defaultdict
+from pymongo import MongoClient
 
-# Import DataLoader for unified model loading
-from common import DataLoader, YOLO_MODEL_PATH, VIT_MODEL_PATH
-
-# Load environment variables
-load_dotenv()
+import image_enhancement
+from common import DataLoader
 
 # =========================
-# CONFIGURATION FROM ENVIRONMENT
+# CONFIG
 # =========================
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123@localhost:27017/video_detection_db?authSource=admin")
-DATABASE_NAME = os.getenv("DATABASE_NAME", "video_detection_db")
+KNOWN_PERSONS_DIR = "known_persons"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-# Supported image extensions for person images
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+IMAGE_SIZE = (224, 224)
+CLEANUP_EVERY_N_IMAGES = 2
+MAX_RAM_MB = 1500
+
+MONGODB_URL = "mongodb://admin:admin123@127.0.0.1:27017/video_detection_db?authSource=admin"
+# MONGODB_URL = os.getenv(
+#     "MONGODB_URL",
+#     "mongodb://admin:admin123@127.0.0.1:27017/video_detection_db?authSource=admin"
+# )
+DB_NAME = "video_detection_db"
 
 
+# =========================
+# UTILS
+# =========================
+def ram_usage_mb():
+    return psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+
+
+def cleanup(force=False):
+    if force or ram_usage_mb() > MAX_RAM_MB:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+
+def sanitize_name(name: str) -> str:
+    name = re.sub(r"[^\w\s-]", "", name.lower())
+    return re.sub(r"[\s-]+", "_", name)
+
+
+# =========================
+# CORE CLASS
+# =========================
 class KnownPersonsManager:
-    """
-    Manager for adding known persons to the database from image files.
+    def __init__(self, db):
+        self.collection = db.known_persons
+        self.data_loader = DataLoader()
+        self.extractor = self.data_loader.get_feature_extractor()
 
-    Features:
-    - Supports flat and nested folder structures
-    - Extracts feature vectors using ViT model
-    - Averages multiple features per person (for nested structure)
-    - Stores normalized features in MongoDB
-    """
+    def run(self):
+        folder = Path(KNOWN_PERSONS_DIR)
+        assert folder.exists(), "known_persons folder not found"
 
-    def __init__(self, db, feature_extractor):
-        """
-        Initialize KnownPersonsManager.
+        images = [
+            f for f in folder.iterdir()
+            if f.suffix.lower() in IMAGE_EXTENSIONS
+        ]
 
-        Args:
-            db: Database instance for MongoDB operations
-            feature_extractor: FeatureExtractor instance for extracting vectors
-        """
-        self.db = db
-        self.feature_extractor = feature_extractor
-        self.known_persons = db.known_persons
+        print(f"📂 Found {len(images)} images")
 
-    async def add_from_folder(self, folder_path: str, structure: str = "auto"):
-        """
-        Add known persons from folder.
+        grouped = self._group_images(images)
+        print(f"👥 Grouped into {len(grouped)} persons")
 
-        Args:
-            folder_path: Path to folder containing person images
-            structure: "flat", "nested", or "auto" (auto-detect)
-        """
-        folder = Path(folder_path)
+        for name, files in grouped.items():
+            print(f"\n👤 Processing: {name} ({len(files)} images)")
+            self._process_person(name, files)
 
-        if not folder.exists():
-            print(f"❌ Folder not found: {folder_path}")
-            return
+        print("\n✅ DONE")
 
-        # Auto-detect folder structure if not specified
-        if structure == "auto":
-            structure = self._detect_structure(folder)
-            print(f"📁 Detected structure: {structure}")
+    def _group_images(self, files):
+        persons = defaultdict(list)
+        for f in files:
+            stem = f.stem
+            m = re.match(r"(.+?)_\d+$", stem)
+            name = m.group(1) if m else stem
+            persons[name].append(f)
 
-        if structure == "flat":
-            await self._process_flat_structure(folder)
-        elif structure == "nested":
-            await self._process_nested_structure(folder)
-        else:
-            print(f"❌ Unknown structure: {structure}")
+        for k in persons:
+            persons[k].sort(key=lambda x: x.name)
 
-    def _detect_structure(self, folder: Path) -> str:
-        """
-        Auto-detect folder structure by checking for subdirectories vs image files.
+        return dict(persons)
 
-        Returns:
-            "nested" if subdirectories exist, "flat" otherwise
-        """
-        subdirs = [d for d in folder.iterdir() if d.is_dir()]
-        image_files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS]
+    def _process_person(self, person_name, image_files):
+        features = []
+        person_id = sanitize_name(person_name)
 
-        if subdirs and not image_files:
-            return "nested"
-        elif image_files and not subdirs:
-            return "flat"
-        elif subdirs and image_files:
-            # Mixed structure, prefer nested
-            return "nested"
-        else:
-            return "flat"
+        for idx, img_path in enumerate(image_files, 1):
+            start = time.time()
 
-    async def _process_flat_structure(self, folder: Path):
-        """
-        Process flat structure: known_persons/person_name.jpg
-        Each image = one person's feature vector
-        """
-        print("\n📂 Processing flat structure...")
-        print(f"   Folder: {folder}")
-
-        image_files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS]
-
-        if not image_files:
-            print("❌ No image files found!")
-            return
-
-        print(f"   Found {len(image_files)} images")
-
-        added = 0
-        for img_file in image_files:
-            # Person name from filename (without extension)
-            person_name = img_file.stem
-            person_id = self._sanitize_id(person_name)
-
-            success = await self._process_person_image(img_file, person_id, person_name)
-            if success:
-                added += 1
-
-        print(f"\n✅ Added {added}/{len(image_files)} persons to database")
-
-    async def _process_nested_structure(self, folder: Path):
-        """
-        Process nested structure: known_persons/person_name/photo1.jpg, photo2.jpg
-
-        Algorithm:
-        1. For each person subdirectory:
-        2. Extract feature vectors from all images
-        3. Average the feature vectors to get a single representative vector
-        4. Store in database
-
-        Averaging multiple features improves robustness by capturing variations
-        in lighting, pose, and expression across multiple photos.
-        """
-        print("\n📂 Processing nested structure...")
-        print(f"   Folder: {folder}")
-
-        person_folders = [d for d in folder.iterdir() if d.is_dir()]
-
-        if not person_folders:
-            print("❌ No person folders found!")
-            return
-
-        print(f"   Found {len(person_folders)} person folders")
-
-        added = 0
-        for person_folder in person_folders:
-            person_name = person_folder.name
-            person_id = self._sanitize_id(person_name)
-
-            # Get all images for this person
-            image_files = [f for f in person_folder.iterdir()
-                           if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS]
-
-            if not image_files:
-                print(f"   ⚠️  No images found for: {person_name}")
+            img = cv2.imread(str(img_path))
+            if img is None:
+                print(f"❌ Cannot read {img_path.name}")
                 continue
 
-            print(f"\n👤 Processing: {person_name} ({len(image_files)} images)")
+            img = cv2.resize(img, IMAGE_SIZE)
+            img = image_enhancement.enhance(img)
 
-            # Extract features from all images
-            feature_vectors = []
-            for img_file in image_files:
-                try:
-                    feature = self._extract_feature_from_file(img_file)
-                    if feature is not None:
-                        feature_vectors.append(feature)
-                        print(f"      ✅ {img_file.name}")
-                except Exception as e:
-                    print(f"      ❌ {img_file.name}: {e}")
+            with torch.no_grad():
+                feat = self.extractor.extract(img)
 
-            if not feature_vectors:
-                print(f"   ❌ No valid features extracted for: {person_name}")
-                continue
+            # 🔥 CRITICAL PART
+            if isinstance(feat, torch.Tensor):
+                feat = feat.detach().cpu().numpy()
 
-            # Average all feature vectors
-            avg_feature = np.mean(feature_vectors, axis=0)
+            features.append(feat.tolist())
 
-            # Normalize
-            norm = np.linalg.norm(avg_feature)
-            if norm > 0:
-                avg_feature = avg_feature / norm
+            del img, feat
 
-            # Save to database
-            success = await self._save_person(person_id, person_name, avg_feature)
-            if success:
-                added += 1
-                print(f"   ✅ Saved with averaged features from {len(feature_vectors)} images")
+            if idx % CLEANUP_EVERY_N_IMAGES == 0:
+                cleanup()
 
-        print(f"\n✅ Added {added}/{len(person_folders)} persons to database")
-
-    async def _process_person_image(self, img_path: Path, person_id: str, person_name: str) -> bool:
-        """
-        Process a single person image for flat structure.
-
-        Args:
-            img_path: Path to image file
-            person_id: Unique person identifier (sanitized from name)
-            person_name: Human-readable person name
-
-        Returns:
-            True if successfully processed and saved, False otherwise
-        """
-        print(f"\n👤 Processing: {person_name}")
-        print(f"   Image: {img_path.name}")
-
-        try:
-            # Extract feature vector using ViT model
-            feature_vector = self._extract_feature_from_file(img_path)
-
-            if feature_vector is None:
-                print(f"   ❌ Failed to extract features")
-                return False
-
-            # Save person with extracted feature to database
-            success = await self._save_person(person_id, person_name, feature_vector)
-
-            if success:
-                print(f"   ✅ Added to database")
-                return True
-            else:
-                print(f"   ❌ Failed to save to database")
-                return False
-
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            return False
-
-    def _extract_feature_from_file(self, img_path: Path) -> np.ndarray:
-        """
-        Extract feature vector from image file using ViT model.
-
-        Args:
-            img_path: Path to image file
-
-        Returns:
-            Normalized feature vector as numpy array, or None if extraction fails
-        """
-        # Read image using OpenCV (BGR format)
-        image = cv2.imread(str(img_path))
-
-        if image is None:
-            raise Exception(f"Cannot read image: {img_path}")
-
-        # Extract feature vector using FeatureExtractor (handles normalization)
-        feature_vector = self.feature_extractor.extract(image)
-
-        return feature_vector
-
-    async def _save_person(self, person_id: str, person_name: str, feature_vector: np.ndarray) -> bool:
-        """
-        Save person with feature vector to MongoDB database.
-
-        Uses upsert logic: creates new record if person_id doesn't exist,
-        or updates existing record (for re-processing).
-
-        Args:
-            person_id: Unique person identifier (used as primary key)
-            person_name: Human-readable person name
-            feature_vector: Normalized feature vector (L2-norm = 1)
-
-        Returns:
-            True if successful, False if database error
-        """
-        try:
-            person_data = {
-                "person_id": person_id,
-                "name": person_name,
-                "feature_vector": feature_vector.tolist(),  # Convert numpy array to list for JSON storage
-                "added_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat()
-            }
-
-            # Upsert: insert if new, update if exists
-            # This allows re-processing person images without duplicates
-            await self.known_persons.update_one(
-                {"person_id": person_id},
-                {"$set": person_data},
-                upsert=True
+            print(
+                f"   ✔ {img_path.name} "
+                f"({(time.time() - start)*1000:.1f} ms)"
             )
 
-            return True
+        if features:
+            self._save(person_id, person_name, features)
 
-        except Exception as e:
-            print(f"   Database error: {e}")
-            return False
+    def _save(self, pid, name, features):
+        self.collection.update_one(
+            {"person_id": pid},
+            {
+                "$set": {
+                    "person_id": pid,
+                    "name": name,
+                    "feature_vectors": features,
+                    "image_count": len(features),
+                    "updated_at": datetime.now().isoformat()
+                }
+            },
+            upsert=True
+        )
 
-    @staticmethod
-    def _sanitize_id(name: str) -> str:
-        """Convert name to valid person_id"""
-        # Remove special characters, replace spaces with underscore
-        import re
-        sanitized = re.sub(r'[^\w\s-]', '', name.lower())
-        sanitized = re.sub(r'[\s-]+', '_', sanitized)
-        return sanitized
+        print(f"💾 Saved {name} ({len(features)} features)")
 
 
-async def list_known_persons():
-    """List all known persons in database"""
-    print("\n📋 Known Persons in Database:")
+# =========================
+# ENTRY POINT
+# =========================
+def main():
+    print("=" * 60)
+    print("🚀 ADD KNOWN PERSONS - PRODUCTION SAFE")
     print("=" * 60)
 
-    client = AsyncIOMotorClient(MONGODB_URL)
-    db = client[DATABASE_NAME]
-    collection = db.known_persons
-
-    cursor = collection.find({})
-    persons = await cursor.to_list(length=1000)
-
-    if not persons:
-        print("   (No known persons found)")
-    else:
-        for i, person in enumerate(persons, 1):
-            print(f"\n{i}. {person['name']}")
-            print(f"   ID: {person['person_id']}")
-            print(f"   Feature dim: {len(person['feature_vector'])}")
-            print(f"   Added: {person['added_at']}")
-
-    print(f"\nTotal: {len(persons)} persons")
-
-    client.close()
-
-
-async def delete_person(person_id: str):
-    """Delete a person from database"""
-    client = AsyncIOMotorClient(MONGODB_URL)
-    db = client[DATABASE_NAME]
-    collection = db.known_persons
-
-    result = await collection.delete_one({"person_id": person_id})
-
-    if result.deleted_count > 0:
-        print(f"✅ Deleted person: {person_id}")
-    else:
-        print(f"❌ Person not found: {person_id}")
-
-    client.close()
-
-
-async def main():
-    """
-    Main entry point for adding known persons to database.
-
-    Supports operations:
-    - add <folder>: Add persons from folder (auto-detect structure)
-    - list: List all known persons
-    - delete <person_id>: Delete a person by ID
-    """
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python add_known_persons.py add <folder_path>       - Add from folder")
-        print("  python add_known_persons.py list                    - List all persons")
-        print("  python add_known_persons.py delete <person_id>      - Delete person")
-        return
-
-    operation = sys.argv[1].lower()
+    client = MongoClient(MONGODB_URL)
+    db = client[DB_NAME]
 
     try:
-        if operation == "add" and len(sys.argv) >= 3:
-            folder_path = sys.argv[2]
-            await add_persons_from_folder(folder_path)
-
-        elif operation == "list":
-            await list_known_persons()
-
-        elif operation == "delete" and len(sys.argv) >= 3:
-            person_id = sys.argv[2]
-            await delete_person(person_id)
-
-        else:
-            print(f"❌ Unknown operation: {operation}")
-
-    except KeyboardInterrupt:
-        print("\n⚠️  Interrupted by user")
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-
-
-async def add_persons_from_folder(folder_path: str):
-    """
-    Add known persons from folder to database.
-
-    Steps:
-    1. Connect to MongoDB
-    2. Initialize FeatureExtractor using DataLoader
-    3. Load images from folder
-    4. Extract features
-    5. Save to database
-
-    Args:
-        folder_path: Path to folder containing person images
-    """
-    print(f"\n🚀 Adding persons from: {folder_path}")
-
-    # Connect to MongoDB
-    client = AsyncIOMotorClient(MONGODB_URL)
-    db = client[DATABASE_NAME]
-
-    # Initialize DataLoader for unified model loading
-    print("📦 Initializing models...")
-    data_loader = DataLoader()
-    feature_extractor = data_loader.get_feature_extractor()
-
-    # Initialize manager
-    manager = KnownPersonsManager(db, feature_extractor)
-
-    # Process folder
-    await manager.add_from_folder(folder_path, structure="auto")
-
-    client.close()
-
-    print("\n✅ Done!")
+        KnownPersonsManager(db).run()
+    finally:
+        client.close()
+        cleanup(force=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

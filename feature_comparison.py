@@ -152,8 +152,8 @@ class FeatureComparison:
 
 if __name__ == "__main__":
     # Test configuration (hardcoded paths for testing)
-    image1 = "known_persons/test1.png"
-    image2 = "known_persons/test3.png"
+    image1 = "known_persons/face3.png"
+    image2 = "known_persons/face2.png"
 
     # Create comparator using centralized DataLoader from common.py
     comparator = FeatureComparison()

@@ -2,7 +2,14 @@ import torch
 import numpy as np
 import cv2
 from PIL import Image
-
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+import torch
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 import common
 from common import preprocess_cv2, load_model_from_models
 
@@ -69,12 +76,19 @@ class FeatureExtractor:
         img = Image.fromarray(image[:, :, ::-1])  # BGR -> RGB
         img = common.to_tensor(img).unsqueeze(0).to(self.device)
 
+
         # 2. Forward pass through model (inference mode - no grad)
         with torch.no_grad():
             feat = self.model(img)
 
-        # 3. Return 1D embedding vector
-        return feat.squeeze(0).cpu().numpy()
+            if isinstance(feat, (list, tuple)):
+                feat = feat[0]
+
+            feat = feat.squeeze(0)
+            feat = torch.nn.functional.normalize(feat, p=2, dim=0)
+
+        return feat.detach().cpu().numpy()
+
 
     def extract_batch(self, images: list) -> np.ndarray:
         """
