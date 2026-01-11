@@ -49,3 +49,5 @@ dist/
 
 # Logs
 *.log
+venv
+extracted_persons
