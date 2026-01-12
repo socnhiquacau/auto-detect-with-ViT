@@ -35,7 +35,8 @@ class PersonExtractor:
         uploads_folder: str = "uploads",
         output_folder: str = "extracted_persons",
         confidence_threshold: float = 0.5,
-        motion_threshold: int = 25
+        motion_threshold: int = 25,
+        frames_per_second: int = 3
     ):
         """
         Initialize PersonExtractor
@@ -46,12 +47,14 @@ class PersonExtractor:
             output_folder: Folder to save extracted person images
             confidence_threshold: Confidence threshold for detection
             motion_threshold: Motion detection threshold (0-255)
+            frames_per_second: Number of frames to process per second (default: 2)
         """
         self.model_path = model_path
         self.uploads_folder = uploads_folder
         self.output_folder = output_folder
         self.confidence_threshold = confidence_threshold
         self.motion_threshold = motion_threshold
+        self.frames_per_second = frames_per_second
 
         # Load YOLO model
         print(f"📦 Loading YOLO model from: {model_path}")
@@ -325,6 +328,11 @@ class PersonExtractor:
         person_detections = 0
         duplicate_count = 0  # Track skipped duplicates
 
+        # Calculate frame interval to achieve desired frames per second
+        # For example: if fps=30 and frames_per_second=2, then frame_interval=15
+        frame_interval = max(1, int(fps / self.frames_per_second))
+        print(f"⚙️  Frame sampling: {self.frames_per_second} frames/sec (processing every {frame_interval} frames)")
+
         # Reset background subtractor for new video
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=500,
@@ -336,6 +344,11 @@ class PersonExtractor:
             ret, frame = cap.read()
             if not ret:
                 break
+
+            # Only process frames at specified interval (e.g., every 15th frame)
+            if frame_id % frame_interval != 0:
+                frame_id += 1
+                continue
 
             # Check for motion
             has_motion = self.detect_motion(frame)
@@ -369,6 +382,9 @@ class PersonExtractor:
 
         cap.release()
 
+        # Calculate actual frames processed
+        frames_processed = frame_id // frame_interval if frame_interval > 0 else frame_id
+        
         # Summary of results
         result = {
             'video_id': video_id,
@@ -376,6 +392,8 @@ class PersonExtractor:
             'video_path': video_path,
             'output_folder': video_output_folder,
             'total_frames': total_frames,
+            'frames_processed': frames_processed,
+            'frames_per_second': self.frames_per_second,
             'motion_frames': motion_frames,
             'person_detections': person_detections,
             'total_saved_images': len(saved_images),
@@ -386,6 +404,7 @@ class PersonExtractor:
 
         print("\n✅ Processing complete!")
         print(f"   - Total frames: {total_frames}")
+        print(f"   - Frames processed: {frames_processed} ({self.frames_per_second} fps)")
         print(f"   - Frames with motion: {motion_frames}")
         print(f"   - Frames with persons: {person_detections}")
         print(f"   - Total saved images: {len(saved_images)}")
@@ -445,7 +464,8 @@ def main():
         uploads_folder="uploads",
         output_folder="extracted_persons",
         confidence_threshold=0.5,
-        motion_threshold=25
+        motion_threshold=25,
+        frames_per_second=3  # Only process 3 frames per second
     )
 
     # Process all videos
