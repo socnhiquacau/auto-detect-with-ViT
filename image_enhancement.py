@@ -9,11 +9,11 @@ class ImageEnhancer:
         # CLAHE parameters
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
-    def _gamma_correct(self, img: np.ndarray, gamma=1.2):
-        """Apply gamma correction to the image"""
-        inv = 1.0 / gamma
-        table = np.array([(i / 255.0) ** inv * 255 for i in range(256)]).astype("uint8")
-        return cv2.LUT(img, table)
+        def _gamma_correct(self, img: np.ndarray, gamma=1.2):
+            """Apply gamma correction to the image"""
+            inv = 1.0 / gamma
+            table = np.array([(i / 255.0) ** inv * 255 for i in range(256)]).astype("uint8")
+            return cv2.LUT(img, table)
 
     def enhance(self, image: np.ndarray) -> np.ndarray:
         """Apply all enhancement techniques to the image"""
