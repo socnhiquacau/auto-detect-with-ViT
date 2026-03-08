@@ -190,10 +190,11 @@ if page == "🏠 Trang chủ":
         - Xem điểm tin cậy
 
         #### 👥 Quản lý Thư viện
-        - Xây dựng cơ sở dữ liệu người
-        - Thêm/xóa người
-        - Xem thống kê
-        - Xuất embeddings
+        - **Tạo nhân vật mới** và upload ảnh
+        - **Thêm ảnh** vào nhân vật có sẵn
+        - Xây dựng cơ sở dữ liệu embeddings
+        - Xem thống kê và preview ảnh
+        - Không cần thao tác thủ công!
         """)
 
     with col2:
@@ -219,9 +220,12 @@ if page == "🏠 Trang chủ":
     with st.expander("1️⃣ Thiết lập Thư viện Người Đã biết"):
         st.markdown("""
         1. Đi đến trang **👥 Quản lý Thư viện**
-        2. Thêm thư mục người vào `known_gallery/`
-        3. Tải ảnh lên cho mỗi người
-        4. Nhấp nút **Xây dựng Thư viện** để tạo embeddings
+        2. Chọn tab **🆕 Tạo nhân vật mới**
+        3. Nhập tên nhân vật và upload ảnh (có thể chọn nhiều ảnh cùng lúc)
+        4. Nhấn **🚀 Tạo nhân vật & Lưu ảnh**
+        5. Nhấn **🔨 Xây dựng Thư viện** để tạo embeddings
+        
+        💡 Có thể upload thêm ảnh bất cứ lúc nào qua tab **📸 Thêm ảnh vào nhân vật có sẵn**
         """)
 
     with st.expander("2️⃣ Xử lý Ánh"):
@@ -571,6 +575,140 @@ elif page == "👥 Quản lý thư viện":
 
         st.markdown("---")
 
+        # Add new person / Add images to existing person
+        st.markdown("### ➕ Thêm Ảnh Nhân Vật")
+
+        tab1, tab2 = st.tabs(
+            ["🆕 Tạo nhân vật mới", "📸 Thêm ảnh vào nhân vật có sẵn"])
+
+        with tab1:
+            st.markdown("**Tạo thư mục nhân vật mới và upload ảnh**")
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                new_person_name = st.text_input(
+                    "Tên nhân vật (VD: nguyen_van_a, cristiano_ronaldo)",
+                    key="new_person_name",
+                    placeholder="Nhập tên không dấu, dùng _ thay khoảng trắng"
+                )
+
+            with col2:
+                st.markdown("**Tự động:**")
+                st.info("📁 Tạo folder\n📸 Lưu ảnh\n✅ Hoàn tất")
+
+            uploaded_new_images = st.file_uploader(
+                "Upload ảnh cho nhân vật mới (có thể chọn nhiều ảnh)",
+                type=['jpg', 'jpeg', 'png'],
+                accept_multiple_files=True,
+                key="new_person_uploader"
+            )
+
+            if st.button("🚀 Tạo nhân vật & Lưu ảnh", type="primary", key="create_person"):
+                if not new_person_name or new_person_name.strip() == "":
+                    st.error("❌ Vui lòng nhập tên nhân vật!")
+                elif not uploaded_new_images:
+                    st.error("❌ Vui lòng upload ít nhất 1 ảnh!")
+                else:
+                    # Clean name
+                    clean_name = new_person_name.strip().replace(" ", "_")
+                    person_dir = f"known_gallery/{clean_name}"
+
+                    if os.path.exists(person_dir):
+                        st.error(
+                            f"❌ Nhân vật '{clean_name}' đã tồn tại! Vui lòng dùng tab 'Thêm ảnh vào nhân vật có sẵn'")
+                    else:
+                        try:
+                            # Create directory
+                            os.makedirs(person_dir, exist_ok=True)
+
+                            # Save images
+                            saved_count = 0
+                            for i, uploaded_file in enumerate(uploaded_new_images, 1):
+                                # Generate filename
+                                ext = uploaded_file.name.split('.')[-1]
+                                filename = f"{clean_name}_{i:02d}.{ext}"
+                                filepath = f"{person_dir}/{filename}"
+
+                                # Save file
+                                with open(filepath, "wb") as f:
+                                    f.write(uploaded_file.getbuffer())
+                                saved_count += 1
+
+                            st.markdown(
+                                f'<div class="success-box">✅ Đã tạo nhân vật <b>{clean_name}</b> với <b>{saved_count}</b> ảnh!<br>📁 Thư mục: {person_dir}</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.info(
+                                "💡 Nhớ nhấn nút '🔨 Xây dựng Thư viện' bên dưới để cập nhật!")
+
+                            # Force refresh
+                            import time
+                            time.sleep(1)
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"❌ Lỗi khi tạo nhân vật: {e}")
+
+        with tab2:
+            st.markdown("**Thêm ảnh vào nhân vật đã có**")
+
+            if persons:
+                selected_person = st.selectbox(
+                    "Chọn nhân vật",
+                    persons,
+                    key="select_person_for_add"
+                )
+
+                # Show current images count
+                person_dir = f"known_gallery/{selected_person}"
+                current_images = [f for f in os.listdir(person_dir)
+                                  if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                st.info(f"📊 Hiện tại có {len(current_images)} ảnh")
+
+                uploaded_add_images = st.file_uploader(
+                    f"Upload thêm ảnh cho {selected_person}",
+                    type=['jpg', 'jpeg', 'png'],
+                    accept_multiple_files=True,
+                    key="add_images_uploader"
+                )
+
+                if st.button("💾 Lưu ảnh vào thư mục", type="primary", key="add_images"):
+                    if not uploaded_add_images:
+                        st.error("❌ Vui lòng chọn ảnh để upload!")
+                    else:
+                        try:
+                            saved_count = 0
+                            start_index = len(current_images) + 1
+
+                            for i, uploaded_file in enumerate(uploaded_add_images, start_index):
+                                ext = uploaded_file.name.split('.')[-1]
+                                filename = f"{selected_person}_{i:02d}.{ext}"
+                                filepath = f"{person_dir}/{filename}"
+
+                                with open(filepath, "wb") as f:
+                                    f.write(uploaded_file.getbuffer())
+                                saved_count += 1
+
+                            st.markdown(
+                                f'<div class="success-box">✅ Đã thêm <b>{saved_count}</b> ảnh vào <b>{selected_person}</b>!<br>📁 Tổng cộng: {len(current_images) + saved_count} ảnh</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.info(
+                                "💡 Nhớ nhấn nút '🔨 Xây dựng Thư viện' để cập nhật embeddings!")
+
+                            import time
+                            time.sleep(1)
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"❌ Lỗi khi thêm ảnh: {e}")
+            else:
+                st.warning(
+                    "⚠️ Chưa có nhân vật nào. Vui lòng tạo nhân vật mới ở tab bên trái!")
+
+        st.markdown("---")
+
         # Show persons
         if persons:
             st.markdown("### 👤 Người Hiện tại")
@@ -639,12 +777,19 @@ elif page == "👥 Quản lý thư viện":
     st.markdown("---")
 
     # Instructions
-    st.markdown("### 📖 Hướng dẫn Thêm Người")
+    st.markdown("### 📖 Hướng dẫn Sử dụng")
     st.markdown("""
+    **Cách 1: Upload ảnh trực tiếp (Khuyến nghị)**
+    1. Vào tab **🆕 Tạo nhân vật mới**
+    2. Nhập tên nhân vật (VD: `nguyen_van_a`, `messi`, `cristiano_ronaldo`)
+    3. Upload nhiều ảnh của người đó (`.jpg`, `.png`)
+    4. Nhấn **🚀 Tạo nhân vật & Lưu ảnh**
+    5. Nhấn **🔨 Xây dựng Thư viện** để hoàn tất
+    
+    **Cách 2: Thêm ảnh thủ công**
     1. Tạo thư mục trong `known_gallery/` với tên người
-    2. Thêm nhiều ảnh của người đó (`.jpg`, `.png`)
-    3. Nhấp nút **Xây dựng Thư viện**
-    4. Thư viện sẽ sẵn sàng để sử dụng cho nhận dạng
+    2. Copy ảnh vào thư mục đó
+    3. Nhấn **🔨 Xây dựng Thư viện**
     
     **Ví dụ cấu trúc:**
     ```
@@ -657,6 +802,11 @@ elif page == "👥 Quản lý thư viện":
         ├── img1.jpg
         └── img2.jpg
     ```
+    
+    **💡 Mẹo:**
+    - Upload 5-10 ảnh/người để độ chính xác tốt hơn
+    - Dùng ảnh nhiều góc độ, điều kiện ánh sáng khác nhau
+    - Tên nhân vật nên không dấu, dùng _ thay khoảng trắng
     """)
 
 
