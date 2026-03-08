@@ -1,62 +1,292 @@
 # 🎯 DHT - Person Detection & Recognition System
 
-A complete AI-powered system for detecting and recognizing people in images and videos using YOLOv8 and ReID models.
+<div align="center">
+
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Python](https://img.shields.io/badge/python-3.9+-green.svg)
+![License](https://img.shields.io/badge/license-MIT-orange.svg)
+![Status](https://img.shields.io/badge/status-production-brightgreen.svg)
+
+**A complete AI-powered system for detecting and recognizing people in images and videos**
+
+[Quick Start](#-quick-start) • [Features](#-features) • [Documentation](#-documentation) • [Demo](#-demo)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [Overview](#-overview)
+- [Features](#-features)
+- [Quick Start](#-quick-start)
+- [Installation](#-installation)
+- [Usage](#-usage-guide)
+- [Interfaces](#-interfaces)
+- [Project Structure](#-project-structure)
+- [Configuration](#-configuration)
+- [Technical Details](#-technical-details)
+- [Documentation](#-documentation)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
+
+---
+
+## 🌟 Overview
+
+DHT is a production-ready person detection and re-identification system powered by state-of-the-art deep learning models:
+
+- **YOLOv8** for fast and accurate person detection
+- **ReID Model** (MobileNetV2 + ViT) for robust person recognition
+- Multiple interfaces: Web UI, REST API, Python SDK
+- Real-time video processing with tracking
+- Easy-to-use gallery management
+
+### Why DHT?
+
+- ✅ **Zero Manual Setup** - Upload images directly via UI
+- ✅ **Production Ready** - RESTful API with MongoDB backend
+- ✅ **Easy to Use** - Beautiful Streamlit web interface
+- ✅ **High Accuracy** - Advanced dual-branch ReID model
+- ✅ **Flexible** - Use as API, UI, or Python library
+- ✅ **Well Documented** - Comprehensive guides and examples
+
+---
 
 ## ✨ Features
 
-- 🔍 **Person Detection** - YOLOv8 for accurate person detection
-- 👤 **Person Recognition** - ReID model for identity matching
-- 🎬 **Video Processing** - Track persons across video frames
-- 📸 **Image Processing** - Single image person recognition
-- 👥 **Gallery Management** - Manage known persons database
-- 🎨 **Multiple Interfaces** - Web UI, REST API, and CLI
+### Core Capabilities
+
+- 🔍 **Person Detection** - YOLOv8 for accurate person detection in images & videos
+- 👤 **Person Recognition** - ReID model with 512-dim embeddings for identity matching
+- 🎬 **Video Processing** - Track persons across frames with temporal coherence
+- 📸 **Image Processing** - Single image person recognition with Top-K results
+- 📊 **Visualization** - Interactive charts, progress bars, and statistics
+- 💾 **Export Results** - Download results as CSV or JSON
+
+### Gallery Management
+
+- 🆕 **Create New Person** - Upload multiple images at once
+- 📸 **Add More Images** - Update existing persons with new photos
+- 🔨 **Build Gallery** - Automatic feature extraction and indexing
+- 👁️ **Preview Images** - View all gallery images with thumbnails
+- 📊 **Statistics** - Track number of persons and images
+
+### Three Interfaces
+
+| Interface           | Best For       | Key Features                        |
+| ------------------- | -------------- | ----------------------------------- |
+| **🎨 Streamlit UI** | Demos, Testing | Visual interface, drag-drop, charts |
+| **📡 FastAPI**      | Production     | REST API, MongoDB, scalable         |
+| **💻 Python SDK**   | Scripting      | Direct access, batch processing     |
+
+---
 
 ## 🚀 Quick Start
 
-### 1. Setup Environment
+### Prerequisites
 
 ```bash
+# System Requirements
+Python 3.9+
+CUDA 11.8+ (optional, for GPU)
+~500 MB disk space for models
+```
+
+### 1. Clone & Install
+
+```bash
+# Clone repository
+git clone <repo-url>
+cd DHT
+
 # Create virtual environment
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Setup folders (auto-created on first run)
-mkdir -p models uploads output/detected temp known_gallery
 ```
 
 ### 2. Add Models
 
-Place these files in `models/` folder:
+Download and place in `models/` folder:
 
-- `yolov8_person_detection.pt` - YOLO detection model
-- `best_model_state_dict.pth` - ReID recognition model
+- `yolov8_person_detection.pt` (~25 MB)
+- `best_model_state_dict.pth` (~88 MB)
 
-### 3. Choose Your Interface
-
-#### Option A: Streamlit Web UI ⭐ **Recommended for beginners**
+### 3. Launch
 
 ```bash
-# Run UI
+# Streamlit UI (Recommended)
 ./run_ui.sh
-# Or: streamlit run streamlit_app.py
+# Opens: http://localhost:8501
 
-# Open browser: http://localhost:8501
+# Or FastAPI
+uvicorn main:app --reload
+# Opens: http://localhost:8000/docs
 ```
 
-**Features:**
+### 4. Add Known Persons
 
-- 🎨 Beautiful web interface
-- 📊 Interactive charts and visualizations
-- 👥 Visual gallery management
-- 📸 Drag & drop image/video upload
-- 💾 Download results as CSV
+**Via UI (Easy):**
 
-[📖 Full Guide](STREAMLIT_UI_GUIDE.md)
+1. Go to "👥 Manage Gallery" page
+2. Click **"🆕 Create New Person"** tab
+3. Enter name: `john_doe`
+4. Upload 5-10 photos (Ctrl+Click for multiple)
+5. Click **"🚀 Create & Save"**
+6. Click **"🔨 Build Gallery"** to finalize
 
-#### Option B: FastAPI REST API ⭐ **For production**
+**Via Manual (Advanced):**
+
+```bash
+mkdir -p known_gallery/john_doe
+cp photos/*.jpg known_gallery/john_doe/
+# Then build via UI or Python
+```
+
+### 5. Process & Recognize
+
+**Images:**
+
+1. Go to "📸 Process Image"
+2. Upload image
+3. View results with confidence scores
+
+**Videos:**
+
+1. Go to "🎬 Process Video"
+2. Upload video file
+3. Wait for processing
+4. Download CSV results
+
+---
+
+## 📦 Installation
+
+### Option A: Pip Install (Recommended)
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install all dependencies
+pip install -r requirements.txt
+
+# Verify installation
+python -c "import torch; import streamlit; import ultralytics; print('✅ All dependencies installed')"
+```
+
+### Option B: Docker (Coming Soon)
+
+```bash
+docker-compose up -d
+```
+
+### Dependencies Overview
+
+```yaml
+Core:
+  - torch>=2.0.0 # Deep learning framework
+  - torchvision # Vision utilities
+  - ultralytics # YOLOv8
+  - timm # Vision models (ViT)
+  - opencv-python # Image/video processing
+
+API:
+  - fastapi # REST API framework
+  - uvicorn # ASGI server
+  - motor # Async MongoDB driver
+  - pymongo # MongoDB sync driver
+
+UI:
+  - streamlit>=1.28.0 # Web interface
+  - plotly # Interactive charts
+  - pandas # Data manipulation
+  - pillow # Image handling
+```
+
+---
+
+## 📖 Usage Guide
+
+### 🎨 Streamlit UI (Recommended for Beginners)
+
+#### Launch UI
+
+```bash
+./run_ui.sh
+# Or: streamlit run streamlit_app.py
+```
+
+#### Features
+
+- **🏠 Home** - Overview and quick stats
+- **📸 Process Image** - Upload image, detect & recognize persons
+- **🎬 Process Video** - Upload video, get tracking results
+- **👥 Manage Gallery** - Create persons, upload images, build embeddings
+- **⚙️ Settings** - Configure models, thresholds, device
+
+#### Gallery Management Workflow
+
+**Create New Person:**
+
+```
+1. Navigate to 👥 Manage Gallery
+2. Select tab: 🆕 Create New Person
+3. Enter name: "cristiano_ronaldo"
+4. Click "Select images" button
+5. Choose 5-10 photos (Ctrl/Cmd + Click)
+6. Click 🚀 Create & Save
+7. Click 🔨 Build Gallery
+```
+
+**Add More Images:**
+
+```
+1. Tab: 📸 Add Images to Existing Person
+2. Select person from dropdown
+3. Upload more photos
+4. Click 💾 Save Images
+5. Click 🔨 Build Gallery to update
+```
+
+#### Processing Workflow
+
+**Image Recognition:**
+
+```
+1. Go to 📸 Process Image
+2. Upload image file
+3. Select Top K (number of matches)
+4. Click 🔍 Detect & Recognize
+5. View results:
+   - Left: Uploaded image
+   - Right: Top matches with confidence
+   - Click "🔍 View Full Size" to enlarge
+6. Scroll down for similarity chart
+```
+
+**Video Processing:**
+
+```
+1. Go to 🎬 Process Video
+2. Upload .mp4/.avi/.mov file
+3. Select Top K results
+4. Click 🎬 Process Video
+5. Wait for processing (shows progress)
+6. View summary statistics
+7. Browse detection table
+8. Download results as CSV
+```
+
+[📖 Full UI Guide](Docs/STREAMLIT_UI_GUIDE.md)
+
+---
+
+### 📡 FastAPI REST API (Production)
 
 ```bash
 # Run API server
@@ -323,61 +553,218 @@ FRAME_EXTRACTION_FPS=1  # Process 1 frame per second
 
 ## 🚀 Development
 
+### Development Setup
+
+```bash
+# Fork and clone
+git clone https://github.com/yourusername/DHT.git
+cd DHT
+
+# Create branch
+git checkout -b feature/your-feature
+
+# Install dev dependencies
+pip install -r requirements.txt
+pip install pytest black flake8
+
+# Make changes and test
+python service.py
+./run_ui.sh
+
+# Format code
+black .
+flake8 .
+
+# Commit and push
+git add .
+git commit -m "Add: your feature description"
+git push origin feature/your-feature
+
+# Create Pull Request
+```
+
 ### Run Tests
 
 ```bash
 # Test service
 python service.py
 
-# Or test via Streamlit UI
+# Test UI
 ./run_ui.sh
+
+# Test API
+uvicorn main:app --reload
+curl http://localhost:8000/health
 ```
 
 ### Debug Mode
 
 ```python
 import logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Run your code
+from service import ReIDPipelineService
+service = ReIDPipelineService()
 ```
+
+---
 
 ## 📦 Dependencies
 
-Core:
+### Core Libraries
 
-- torch, torchvision - Deep learning
-- ultralytics - YOLOv8
-- timm - ReID models
-- opencv-python - Image/video processing
+```yaml
+Deep Learning:
+  - torch>=2.0.0 # PyTorch framework
+  - torchvision # Vision utilities
+  - ultralytics # YOLOv8
+  - timm # Vision Transformers
 
-API:
+Image/Video:
+  - opencv-python # Image/video processing
+  - pillow # Image handling
+  - numpy # Array operations
 
-- fastapi, uvicorn - REST API
-- motor, pymongo - MongoDB
+Web Framework:
+  - fastapi # REST API
+  - uvicorn # ASGI server
+  - streamlit>=1.28.0 # Web UI
 
-UI:
+Database:
+  - motor # Async MongoDB
+  - pymongo # Sync MongoDB
 
-- streamlit - Web interface
-- plotly - Interactive charts
-- pandas - Data handling
+Visualization:
+  - plotly # Interactive charts
+  - pandas # Data manipulation
+  - matplotlib # Plotting
 
-## 🎉 Credits
+Utilities:
+  - python-dotenv # Environment variables
+  - requests # HTTP client
+  - tqdm # Progress bars
+```
 
-- YOLOv8: [Ultralytics](https://github.com/ultralytics/ultralytics)
-- DINO ViT: [Facebook Research](https://github.com/facebookresearch/dino)
-- Streamlit: [Streamlit.io](https://streamlit.io)
+### Installation
 
-## 📝 License
+```bash
+# All dependencies
+pip install -r requirements.txt
 
-This project is for educational and research purposes.
+# Core only (minimal)
+pip install -r requirements-core.txt
+
+# With GPU support
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt
+```
+
+---
+
+## 🎉 Credits & Acknowledgments
+
+### Technologies
+
+- **YOLOv8** - [Ultralytics](https://github.com/ultralytics/ultralytics)
+- **DINO ViT** - [Facebook Research](https://github.com/facebookresearch/dino)
+- **Streamlit** - [Streamlit.io](https://streamlit.io)
+- **FastAPI** - [FastAPI](https://fastapi.tiangolo.com)
+- **PyTorch** - [PyTorch](https://pytorch.org)
+
+### Research Papers
+
+```bibtex
+@software{yolov8_ultralytics,
+  author = {Glenn Jocher and Ayush Chaurasia and Jing Qiu},
+  title = {Ultralytics YOLOv8},
+  year = {2023},
+  url = {https://github.com/ultralytics/ultralytics}
+}
+
+@article{caron2021emerging,
+  title={Emerging Properties in Self-Supervised Vision Transformers},
+  author={Caron, Mathilde and Touvron, Hugo and Misra, Ishan and others},
+  journal={ICCV},
+  year={2021}
+}
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+**For educational and research purposes.**
+
+---
 
 ## 🤝 Contributing
 
-Contributions welcome! Please:
+We welcome contributions! Here's how:
+
+### Guidelines
+
+- ✅ Follow PEP 8 style guide
+- ✅ Add docstrings to functions
+- ✅ Update documentation
+- ✅ Test your changes
+- ✅ Write clear commit messages
+
+### Areas for Contribution
+
+- 🔨 Add unit tests
+- 📝 Improve documentation
+- 🚀 Optimize performance
+- 🎨 Enhance UI/UX
+- 🐛 Fix bugs
+- ✨ Add new features
+
+### Steps
 
 1. Fork the repo
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
-4. Submit a pull request
+4. Commit changes (`git commit -m 'Add amazing feature'`)
+5. Push to branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
+
+---
+
+## 📞 Contact & Support
+
+- 📧 **Email:** support@example.com
+- 🐛 **Issues:** [GitHub Issues](https://github.com/yourusername/DHT/issues)
+- 📖 **Docs:** [Full Documentation](Docs/COMPLETE_DOCUMENTATION.md)
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/yourusername/DHT/discussions)
+
+---
+
+## 🌟 Star History
+
+If you find this project useful, please consider giving it a ⭐!
+
+---
+
+<div align="center">
+
+### 🎯 DHT - Person Detection & Recognition System
+
+**Made with ❤️ by DHT Team**
+
+![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)
+![Update](https://img.shields.io/badge/last_update-March_2026-blue.svg)
+![Python](https://img.shields.io/badge/python-3.9+-green.svg)
+
+---
+
+**⭐ Star this repo if you find it useful!**
+
+[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-documentation) • [🐛 Report Bug](https://github.com/yourusername/DHT/issues) • [✨ Request Feature](https://github.com/yourusername/DHT/issues)
 
 ---
 
@@ -385,6 +772,4 @@ Contributions welcome! Please:
 **Version:** 1.0.0  
 **Last Updated:** March 8, 2026
 
-For questions or issues, please check the documentation files above.
-
-**Happy Coding!** 🚀
+</div>
