@@ -1,9 +1,14 @@
 import os
+import ssl
 from PIL import Image
 import torch
 from torchvision import transforms
 import numpy as np
 from dotenv import load_dotenv
+
+# ⚠️  SSL bypass for development only (allows torch.hub downloads)
+# Remove this in production!
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,12 +24,14 @@ STD = [0.229, 0.224, 0.225]
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.75"))
 KNOWN_PERSON_THRESHOLD = float(os.getenv("KNOWN_PERSON_THRESHOLD", "0.95"))
 FRAME_EXTRACTION_FPS = int(os.getenv("FRAME_EXTRACTION_FPS", "2"))
-YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolov8_person_detection.pt")
+YOLO_MODEL_PATH = os.getenv(
+    "YOLO_MODEL_PATH", "models/yolov8_person_detection.pt")
 VIT_MODEL_PATH = os.getenv("VIT_MODEL_PATH", "models/vit_final_model.pth")
 
 # =========================
 # RESIZE + PAD
 # =========================
+
 
 def resize_with_padding(
     img: Image.Image,
@@ -64,7 +71,8 @@ def resize_with_padding(
 # to standardized distribution expected by model training
 to_tensor = transforms.Compose([
     transforms.ToTensor(),  # Convert PIL image to [0,1] float tensor
-    transforms.Normalize(mean=MEAN, std=STD)  # Normalize using ImageNet statistics
+    # Normalize using ImageNet statistics
+    transforms.Normalize(mean=MEAN, std=STD)
 ])
 
 
@@ -147,13 +155,15 @@ def find_model_file(preferred_name: str = None) -> str:
     # If user didn't request a specific name, return the first top-level candidate
     if not preferred_name:
         # prefer files directly under models/ (non-recursive) if any
-        top_level = [f for f in os.listdir(models_dir) if f.lower().endswith((".pt", ".pth"))]
+        top_level = [f for f in os.listdir(
+            models_dir) if f.lower().endswith((".pt", ".pth"))]
         if top_level:
             return os.path.join(models_dir, top_level[0])
         # otherwise fallback to recursive picks
         if all_model_files:
             return all_model_files[0]
-        raise FileNotFoundError(f"No .pt/.pth model files found in {models_dir}")
+        raise FileNotFoundError(
+            f"No .pt/.pth model files found in {models_dir}")
 
     # Normalize preferred_name: strip models/ prefix if present
     norm_name = preferred_name.replace("\\", "/")
@@ -167,9 +177,11 @@ def find_model_file(preferred_name: str = None) -> str:
             if os.path.commonpath([os.path.abspath(preferred_name), os.path.abspath(models_dir)]) == os.path.abspath(models_dir):
                 return os.path.abspath(preferred_name)
             else:
-                raise ValueError(f"Provided absolute model path is outside models/: {preferred_name}")
+                raise ValueError(
+                    f"Provided absolute model path is outside models/: {preferred_name}")
         else:
-            raise FileNotFoundError(f"Model file not found at absolute path: {preferred_name}")
+            raise FileNotFoundError(
+                f"Model file not found at absolute path: {preferred_name}")
 
     # First check direct file under models_dir using normalized name
     direct_path = os.path.join(models_dir, norm_name)
@@ -177,7 +189,8 @@ def find_model_file(preferred_name: str = None) -> str:
         return direct_path
 
     # Next, check top-level simple filename match (e.g., user passed 'dino_vits16.pth')
-    candidates = [os.path.join(models_dir, f) for f in os.listdir(models_dir) if f.lower().endswith((".pt", ".pth"))]
+    candidates = [os.path.join(models_dir, f) for f in os.listdir(
+        models_dir) if f.lower().endswith((".pt", ".pth"))]
     for c in candidates:
         if os.path.basename(c).lower() == norm_name.lower():
             return c
@@ -188,7 +201,8 @@ def find_model_file(preferred_name: str = None) -> str:
             return p
 
     # Not found: prepare helpful diagnostic message
-    available = "\n".join([os.path.relpath(p, models_dir) for p in all_model_files]) if all_model_files else "(none)"
+    available = "\n".join([os.path.relpath(p, models_dir)
+                          for p in all_model_files]) if all_model_files else "(none)"
     raise FileNotFoundError(
         f"Model {preferred_name} not found inside {models_dir}.\n"
         f"Searched direct path: {direct_path}\n"
@@ -246,7 +260,8 @@ def _build_model_from_state_dict(state_dict: dict, device: torch.device = None):
 
     # 3. Load weights (strict=False để an toàn với layer dư thừa)
     try:
-        missing, unexpected = vit.load_state_dict(processed_state_dict, strict=False)
+        missing, unexpected = vit.load_state_dict(
+            processed_state_dict, strict=False)
 
         if missing:
             print(f"   [Warning] Missing keys: {missing[:3]}...")
@@ -283,7 +298,8 @@ def load_model_from_models(
     Returns:
         Loaded model instance (nn.Module)
     """
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu")
     path = find_model_file(filename)
     print(f"Loading model from: {path}")
 
@@ -337,7 +353,8 @@ def load_model_from_models(
                 name = k[7:] if k.startswith('module.') else k
                 processed_state_dict[name] = v
 
-            missing, unexpected = model_arch.load_state_dict(processed_state_dict, strict=False)
+            missing, unexpected = model_arch.load_state_dict(
+                processed_state_dict, strict=False)
             if missing:
                 print(f"[Warning] Missing keys: {missing[:3]}...")
 
@@ -386,7 +403,8 @@ class DataLoader:
             vit_path: Path to ViT model (default from VIT_MODEL_PATH env var)
             device: torch device (default: cuda if available, else cpu)
         """
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
         self.yolo_path = yolo_path or YOLO_MODEL_PATH
         self.vit_path = vit_path or VIT_MODEL_PATH
 

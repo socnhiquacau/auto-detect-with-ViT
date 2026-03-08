@@ -50,8 +50,10 @@ class ReIDModel(nn.Module):
 
     def __init__(self, num_classes: int = 245, emb_dim: int = 512):
         super().__init__()
-        self.cnn = timm.create_model("mobilenetv2_100", pretrained=False, num_classes=0)
-        self.vit = timm.create_model("vit_small_patch16_224", pretrained=False, num_classes=0)
+        self.cnn = timm.create_model(
+            "mobilenetv2_100", pretrained=False, num_classes=0)
+        self.vit = timm.create_model(
+            "vit_small_patch16_224", pretrained=False, num_classes=0)
 
         dim_cnn = self.cnn.num_features
         dim_vit = self.vit.num_features
@@ -71,7 +73,8 @@ class ReIDModel(nn.Module):
         cnn_fmap = self.cnn.forward_features(x)
         cnn_vec = F.adaptive_avg_pool2d(cnn_fmap, 1).flatten(1)
 
-        x224 = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
+        x224 = F.interpolate(x, size=(224, 224),
+                             mode="bilinear", align_corners=False)
         vit_tokens = self.vit.forward_features(x224)
         cls_token = vit_tokens[:, 0, :]
 
@@ -206,7 +209,8 @@ class ReIDPipelineService:
         device: Optional[str] = None,
     ):
         self.base_dir = Path(__file__).resolve().parent
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.device = torch.device(device or (
+            "cuda" if torch.cuda.is_available() else "cpu"))
         self.known_threshold = known_threshold
 
         self.yolo_path = self._resolve_relative_path(yolo_model_path)
@@ -218,7 +222,8 @@ class ReIDPipelineService:
             [
                 transforms.Resize((256, 128)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transforms.Normalize(
+                    mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
         self.gallery = KnownGalleryManager()
@@ -235,7 +240,8 @@ class ReIDPipelineService:
 
         model = ReIDModel(num_classes=245).to(self.device)
         checkpoint = torch.load(str(weights_path), map_location="cpu")
-        state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+        state = checkpoint["model"] if isinstance(
+            checkpoint, dict) and "model" in checkpoint else checkpoint
 
         drop_prefixes = ("cls_final.", "cls_cnn.", "cls_vit.")
         for key in [k for k in list(state.keys()) if k.startswith(drop_prefixes)]:
@@ -272,7 +278,8 @@ class ReIDPipelineService:
             # Ultralytics tracker backend may require optional dependency "lap".
             if exc.name != "lap":
                 raise
-            print("[WARN] 'lap' is not installed. Falling back to built-in IoU tracker.")
+            print(
+                "[WARN] 'lap' is not installed. Falling back to built-in IoU tracker.")
             return self._track_persons_iou_fallback(path=path, conf=conf, iou_threshold=iou)
 
     def _track_persons_ultralytics(
@@ -300,7 +307,8 @@ class ReIDPipelineService:
 
             xyxy = boxes.xyxy.detach().cpu().numpy()
             confs = boxes.conf.detach().cpu().numpy()
-            ids = boxes.id.detach().cpu().numpy().astype(int) if boxes.id is not None else None
+            ids = boxes.id.detach().cpu().numpy().astype(
+                int) if boxes.id is not None else None
             frame = result.orig_img
 
             for idx in range(len(xyxy)):
@@ -441,7 +449,8 @@ class ReIDPipelineService:
                         )
                         tracks.setdefault(track_id, []).append(item)
                 else:
-                    active[track_id]["missed"] = int(active[track_id]["missed"]) + 1
+                    active[track_id]["missed"] = int(
+                        active[track_id]["missed"]) + 1
                     if int(active[track_id]["missed"]) > max_missed:
                         del active[track_id]
 
@@ -579,11 +588,13 @@ class ReIDPipelineService:
         output_path = self._resolve_relative_path(output_npz_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.gallery.build_from_directory(images_dir, embed_fn=self.embed_image, recursive=True)
+        self.gallery.build_from_directory(
+            images_dir, embed_fn=self.embed_image, recursive=True)
         self.gallery.save_npz(output_path)
 
     def compare_with_gallery(self, query_embedding: np.ndarray, topk: int = 5) -> Dict:
-        top_matches = self.gallery.search_topk(query_embedding=query_embedding, topk=topk)
+        top_matches = self.gallery.search_topk(
+            query_embedding=query_embedding, topk=topk)
         if not top_matches:
             return {
                 "label": "unknown",
@@ -628,7 +639,8 @@ class ReIDPipelineService:
         """
         formatted_items: List[Dict] = []
         for item in video_result.get("results", []):
-            prediction = self.format_match_result(item.get("prediction", {}), decimals=decimals)
+            prediction = self.format_match_result(
+                item.get("prediction", {}), decimals=decimals)
             formatted_items.append(
                 {
                     "track_id": int(item.get("track_id", -1)),
@@ -798,17 +810,71 @@ class ReIDPipelineService:
 
 
 if __name__ == "__main__":
-    # Example usage:
-    # 1) Build once:
-       service = ReIDPipelineService()
-       service.build_known_gallery("known_gallery", "known_gallery/gallery_embeddings.npz")
-    #
-    # 2) Load and run query:
-    #    service.load_known_gallery("known_gallery/gallery_embeddings.npz")
-    #    print(service.process_query_image("query.jpg", topk=5))
-    #
-    # 3) Load and run video:
-       service.load_known_gallery("known_gallery/gallery_embeddings.npz")
-       raw = service.process_video("V:/Doc/Thesis/DTH_Indentify/DTH_AUTO/uploads/test.mp4", topk=5)
-       formatted = service.format_video_result(raw)
-       print(formatted)
+    """
+    Demo script for ReIDPipelineService
+
+    Usage:
+    1) Build known gallery from images in known_persons/
+    2) Process a video and match against known persons
+    """
+    import sys
+
+    print("=" * 60)
+    print("ReID Pipeline Service - Demo")
+    print("=" * 60)
+
+    # Initialize service
+    print("\n1️⃣  Initializing ReID service...")
+    service = ReIDPipelineService(
+        yolo_model_path="models/yolov8_person_detection.pt",
+        reid_weights_path="models/best_model_state_dict.pth",
+        known_threshold=0.8
+    )
+    print("✅ Service initialized")
+
+    # Check if known_gallery folder exists
+    import os
+    if not os.path.exists("known_gallery"):
+        print("\n⚠️  'known_gallery' folder not found")
+        print("Creating example structure...")
+        os.makedirs("known_gallery", exist_ok=True)
+        print("Please add person images to 'known_gallery/' folder")
+        print("Format: known_gallery/<person_name>/<images>.jpg")
+        sys.exit(0)
+
+    # Build or load known gallery
+    gallery_path = "known_gallery/gallery_embeddings.npz"
+
+    if not os.path.exists(gallery_path):
+        print("\n2️⃣  Building known gallery from images...")
+        try:
+            service.build_known_gallery("known_gallery", gallery_path)
+            print(f"✅ Gallery saved to: {gallery_path}")
+        except Exception as e:
+            print(f"❌ Error building gallery: {e}")
+            sys.exit(1)
+    else:
+        print(f"\n2️⃣  Loading existing gallery: {gallery_path}")
+        service.load_known_gallery(gallery_path)
+        print("✅ Gallery loaded")
+
+    # Example: Process a query image
+    print("\n3️⃣  Demo options:")
+    print("   - To process an image: service.process_query_image('image.jpg', topk=5)")
+    print("   - To process a video: service.process_video('video.mp4', topk=5)")
+    print("\n📝 Edit the code in 'if __name__ == \"__main__\"' block to customize")
+
+    # Example video processing (commented out - add your video path)
+    # print("\n4️⃣  Processing video...")
+    # video_path = "temp/test_video.mp4"  # Change this
+    # if os.path.exists(video_path):
+    #     raw = service.process_video(video_path, topk=5)
+    #     formatted = service.format_video_result(raw)
+    #     print("\n📊 Results:")
+    #     print(formatted)
+    # else:
+    #     print(f"⚠️  Video not found: {video_path}")
+
+    print("\n" + "=" * 60)
+    print("Demo completed!")
+    print("=" * 60)

@@ -13,3 +13,7 @@ torch==2.1.1
 torchvision==0.16.1
 ultralytics==8.0.228
 Pillow==10.1.0
+timm
+streamlit
+plotly
+pandas
