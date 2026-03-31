@@ -3,17 +3,15 @@ import traceback
 import cv2
 import numpy as np
 import torch
-from torchvision import transforms
-from PIL import Image
 import requests
-from typing import List, Dict, Tuple
+from typing import Dict
 import os
 import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 
-from image_enhancement import ImageEnhancer
-from common import DataLoader, CONFIDENCE_THRESHOLD, KNOWN_PERSON_THRESHOLD, FRAME_EXTRACTION_FPS
+from src.pipeline.image_enhancement import ImageEnhancer
+from src.core.common import DataLoader, CONFIDENCE_THRESHOLD, KNOWN_PERSON_THRESHOLD, FRAME_EXTRACTION_FPS
 
 # Load environment variables
 load_dotenv()

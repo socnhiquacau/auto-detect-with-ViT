@@ -1,5 +1,6 @@
 import os
 import ssl
+from pathlib import Path
 from PIL import Image
 import torch
 from torchvision import transforms
@@ -11,7 +12,8 @@ from dotenv import load_dotenv
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # Load environment variables from .env file
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
 
 # =========================
 # CONFIG
@@ -123,10 +125,8 @@ def preprocess_cv2(
 # =========================
 
 def _models_dir() -> str:
-    # Prefer an explicit models/ folder in repository root
-    cwd = os.getcwd()
-    models_dir = os.path.join(cwd, "models")
-    return models_dir
+    # Use models/ folder in repository root.
+    return str(PROJECT_ROOT / "models")
 
 
 def find_model_file(preferred_name: str = None) -> str:
@@ -439,7 +439,7 @@ class DataLoader:
         """
         if self._feature_extractor is None:
             # Import here to avoid circular dependency
-            from feature_extractor import FeatureExtractor
+            from src.pipeline.feature_extractor import FeatureExtractor
 
             model_to_load = model_name or self.vit_path
             print(f"📦 Loading FeatureExtractor with model: {model_to_load}")

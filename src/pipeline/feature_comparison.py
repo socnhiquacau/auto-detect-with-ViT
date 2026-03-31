@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from common import DataLoader
+from src.core.common import DataLoader
 
 
 class FeatureComparison:

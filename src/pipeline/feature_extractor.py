@@ -5,13 +5,12 @@ from PIL import Image
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
-import torch
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
-import common
-from common import preprocess_cv2, load_model_from_models
+from src.core import common
+from src.core.common import load_model_from_models
 
 
 class FeatureExtractor:

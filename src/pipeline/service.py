@@ -50,10 +50,8 @@ class ReIDModel(nn.Module):
 
     def __init__(self, num_classes: int = 245, emb_dim: int = 512):
         super().__init__()
-        self.cnn = timm.create_model(
-            "mobilenetv2_100", pretrained=False, num_classes=0)
-        self.vit = timm.create_model(
-            "vit_small_patch16_224", pretrained=False, num_classes=0)
+        self.cnn = timm.create_model("mobilenetv2_100", pretrained=False, num_classes=0)
+        self.vit = timm.create_model("vit_small_patch16_224", pretrained=False, num_classes=0)
 
         dim_cnn = self.cnn.num_features
         dim_vit = self.vit.num_features
@@ -73,8 +71,7 @@ class ReIDModel(nn.Module):
         cnn_fmap = self.cnn.forward_features(x)
         cnn_vec = F.adaptive_avg_pool2d(cnn_fmap, 1).flatten(1)
 
-        x224 = F.interpolate(x, size=(224, 224),
-                             mode="bilinear", align_corners=False)
+        x224 = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
         vit_tokens = self.vit.forward_features(x224)
         cls_token = vit_tokens[:, 0, :]
 
@@ -196,7 +193,7 @@ class ReIDPipelineService:
     """
     End-to-end pipeline:
     1) Track persons in video with YOLO
-    2) Select highest-quality frame crop per track
+    2) Select robust best-quality frame crop per track
     3) Embed crop by ReID model
     4) Compare against known gallery embeddings
     """
@@ -205,25 +202,41 @@ class ReIDPipelineService:
         self,
         yolo_model_path: str = "models/yolov8_person_detection.pt",
         reid_weights_path: str = "models/best_model_state_dict.pth",
-        known_threshold: float = 0.8,
+        classifier_model_path: str = "models/classification.pth",
+        known_threshold: float = 0.75,
+        classification_known_threshold: float = 0.75,
+        detection_confidence: float = 0.85,
+        detection_iou: float = 0.7,
+        min_box_area_ratio: float = 0.02,
         device: Optional[str] = None,
     ):
-        self.base_dir = Path(__file__).resolve().parent
-        self.device = torch.device(device or (
-            "cuda" if torch.cuda.is_available() else "cpu"))
+        self.project_root = Path(__file__).resolve().parents[2]
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.known_threshold = known_threshold
+        self.classification_known_threshold = classification_known_threshold
+        self.detection_confidence = float(np.clip(detection_confidence, 0.0, 1.0))
+        self.detection_iou = float(np.clip(detection_iou, 0.0, 1.0))
+        self.min_box_area_ratio = max(0.0, float(min_box_area_ratio))
 
         self.yolo_path = self._resolve_relative_path(yolo_model_path)
         self.reid_path = self._resolve_relative_path(reid_weights_path)
+        self.classifier_path = self._resolve_relative_path(classifier_model_path)
 
         self.yolo_model = YOLO(str(self.yolo_path))
         self.reid_model = self._load_reid_model(self.reid_path)
+        self.classifier_model: Optional[nn.Module] = None
         self.transform = transforms.Compose(
             [
                 transforms.Resize((256, 128)),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ]
+        )
+        self.classifier_transform = transforms.Compose(
+            [
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
         self.gallery = KnownGalleryManager()
@@ -232,7 +245,7 @@ class ReIDPipelineService:
         candidate = Path(relative_or_abs_path)
         if candidate.is_absolute():
             return candidate
-        return (self.base_dir / candidate).resolve()
+        return (self.project_root / candidate).resolve()
 
     def _load_reid_model(self, weights_path: Path) -> nn.Module:
         if not weights_path.exists():
@@ -240,8 +253,7 @@ class ReIDPipelineService:
 
         model = ReIDModel(num_classes=245).to(self.device)
         checkpoint = torch.load(str(weights_path), map_location="cpu")
-        state = checkpoint["model"] if isinstance(
-            checkpoint, dict) and "model" in checkpoint else checkpoint
+        state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
 
         drop_prefixes = ("cls_final.", "cls_cnn.", "cls_vit.")
         for key in [k for k in list(state.keys()) if k.startswith(drop_prefixes)]:
@@ -251,42 +263,199 @@ class ReIDPipelineService:
         model.eval()
         return model
 
+    def _load_classifier_model(self, weights_path: Path) -> nn.Module:
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Classifier weights not found: {weights_path}")
+
+        model = timm.create_model(
+            "vit_base_patch16_224",
+            pretrained=False,
+            num_classes=2,
+        ).to(self.device)
+
+        checkpoint = torch.load(str(weights_path), map_location="cpu")
+        state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+
+        if isinstance(state, nn.Module):
+            state.eval()
+            state.to(self.device)
+            return state
+        if not isinstance(state, dict):
+            raise RuntimeError(f"Unsupported classifier checkpoint format: {type(state)}")
+
+        processed_state = {}
+        for key, value in state.items():
+            name = key[7:] if key.startswith("module.") else key
+            processed_state[name] = value
+
+        model.load_state_dict(processed_state, strict=False)
+        model.eval()
+        return model
+
+    def _get_classifier_model(self) -> nn.Module:
+        if self.classifier_model is None:
+            self.classifier_model = self._load_classifier_model(self.classifier_path)
+        return self.classifier_model
+
     @staticmethod
-    def _quality_score(crop_bgr: np.ndarray) -> float:
-        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        h, w = crop_bgr.shape[:2]
+    def _expand_bbox(
+        bbox_xyxy: Tuple[int, int, int, int],
+        frame_shape: Tuple[int, int, int],
+        pad_x_ratio: float = 0.12,
+        pad_top_ratio: float = 0.08,
+        pad_bottom_ratio: float = 0.15,
+    ) -> Tuple[int, int, int, int]:
+        x1, y1, x2, y2 = bbox_xyxy
+        frame_h, frame_w = frame_shape[:2]
+        box_w = max(1, x2 - x1)
+        box_h = max(1, y2 - y1)
+
+        pad_x = int(round(box_w * pad_x_ratio))
+        pad_top = int(round(box_h * pad_top_ratio))
+        pad_bottom = int(round(box_h * pad_bottom_ratio))
+
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_top)
+        x2 = min(frame_w, x2 + pad_x)
+        y2 = min(frame_h, y2 + pad_bottom)
+        return x1, y1, x2, y2
+
+    @staticmethod
+    def _quality_score(crop_bgr: np.ndarray, confidence: float = 1.0) -> float:
+        if crop_bgr is None or crop_bgr.size == 0:
+            return 0.0
+
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        laplacian_var = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+
+        sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        tenengrad = float(np.mean((sobel_x * sobel_x) + (sobel_y * sobel_y)))
+
+        h, w = gray.shape[:2]
         area = float(h * w)
-        return sharpness + 0.001 * area
+        min_side = float(min(h, w))
+        aspect_ratio = float(w / max(h, 1))
+        brightness = float(gray.mean())
+        contrast = float(gray.std())
+
+        p05, p95 = np.percentile(gray, [5.0, 95.0])
+        dynamic_range = float(max(0.0, p95 - p05))
+
+        gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+        hist = cv2.calcHist([gray_u8], [0], None, [64], [0, 256]).flatten().astype(np.float64)
+        hist_prob = hist / (hist.sum() + 1e-12)
+        entropy = float(-np.sum(hist_prob * np.log2(hist_prob + 1e-12)) / 6.0)
+
+        median = cv2.medianBlur(gray_u8, 3).astype(np.float32)
+        noise_sigma = float(np.std(gray - median))
+        over_ratio = float(np.mean(gray >= 250.0))
+        under_ratio = float(np.mean(gray <= 5.0))
+
+        sharpness_score = float(np.clip(np.log1p(laplacian_var) / 7.2, 0.0, 1.0))
+        texture_score = float(np.clip(np.log1p(tenengrad) / 10.2, 0.0, 1.0))
+        detail_score = float(np.clip(dynamic_range / 180.0, 0.0, 1.0))
+        entropy_score = float(np.clip(entropy, 0.0, 1.0))
+        noise_score = float(np.clip(1.0 - (noise_sigma / 42.0), 0.0, 1.0))
+        area_score = float(np.clip(np.log1p(area) / 11.5, 0.0, 1.0))
+        size_score = float(np.clip(min_side / 180.0, 0.0, 1.0))
+        contrast_score = float(np.clip(contrast / 70.0, 0.0, 1.0))
+        brightness_score = float(np.clip(1.0 - abs(brightness - 138.0) / 138.0, 0.0, 1.0))
+        clipping_score = float(np.clip(1.0 - (over_ratio + under_ratio) * 3.0, 0.0, 1.0))
+        exposure_score = 0.55 * brightness_score + 0.45 * clipping_score
+        aspect_score = float(np.clip(1.0 - abs(aspect_ratio - 0.42) / 0.35, 0.0, 1.0))
+        confidence_score = float(np.clip(confidence, 0.0, 1.0))
+
+        return 100.0 * (
+            0.24 * sharpness_score
+            + 0.19 * texture_score
+            + 0.11 * detail_score
+            + 0.10 * entropy_score
+            + 0.09 * noise_score
+            + 0.12 * area_score
+            + 0.07 * size_score
+            + 0.03 * contrast_score
+            + 0.03 * exposure_score
+            + 0.01 * aspect_score
+            + 0.01 * confidence_score
+        )
+
+    @staticmethod
+    def _smooth_track_scores(scores: np.ndarray) -> np.ndarray:
+        if scores.size < 3:
+            return scores.copy()
+        padded = np.pad(scores.astype(np.float32), (1, 1), mode="edge")
+        return (padded[:-2] + (2.0 * padded[1:-1]) + padded[2:]) / 4.0
+
+    @staticmethod
+    def _bbox_area(bbox_xyxy: Tuple[int, int, int, int]) -> int:
+        x1, y1, x2, y2 = bbox_xyxy
+        return max(0, x2 - x1) * max(0, y2 - y1)
+
+    @staticmethod
+    def _prepare_visual_crop(crop_bgr: np.ndarray, target_min_side: int = 256) -> np.ndarray:
+        visual = crop_bgr.copy()
+        h, w = visual.shape[:2]
+        min_side = min(h, w)
+        if min_side > 0 and min_side < target_min_side:
+            scale = target_min_side / float(min_side)
+            visual = cv2.resize(
+                visual,
+                (int(round(w * scale)), int(round(h * scale))),
+                interpolation=cv2.INTER_CUBIC,
+            )
+
+        blurred = cv2.GaussianBlur(visual, (0, 0), sigmaX=1.1, sigmaY=1.1)
+        visual = cv2.addWeighted(visual, 1.18, blurred, -0.18, 0)
+        return np.clip(visual, 0, 255).astype(np.uint8)
 
     def track_persons(
         self,
         video_path: str,
-        conf: float = 0.25,
-        iou: float = 0.5,
+        conf: Optional[float] = None,
+        iou: Optional[float] = None,
+        min_box_area_ratio: Optional[float] = None,
     ) -> Dict[int, List[TrackCrop]]:
         """
         Track persons and collect all crops per track id.
         """
+        conf = self.detection_confidence if conf is None else float(np.clip(conf, 0.0, 1.0))
+        iou = self.detection_iou if iou is None else float(np.clip(iou, 0.0, 1.0))
+        min_box_area_ratio = (
+            self.min_box_area_ratio
+            if min_box_area_ratio is None
+            else max(0.0, float(min_box_area_ratio))
+        )
+
         path = self._resolve_relative_path(video_path)
         if not path.exists():
             raise FileNotFoundError(f"Video not found: {path}")
 
         try:
-            return self._track_persons_ultralytics(path=path, conf=conf, iou=iou)
+            return self._track_persons_ultralytics(
+                path=path,
+                conf=conf,
+                iou=iou,
+                min_box_area_ratio=min_box_area_ratio,
+            )
         except ModuleNotFoundError as exc:
             # Ultralytics tracker backend may require optional dependency "lap".
             if exc.name != "lap":
                 raise
-            print(
-                "[WARN] 'lap' is not installed. Falling back to built-in IoU tracker.")
-            return self._track_persons_iou_fallback(path=path, conf=conf, iou_threshold=iou)
+            print("[WARN] 'lap' is not installed. Falling back to built-in IoU tracker.")
+            return self._track_persons_iou_fallback(
+                path=path,
+                conf=conf,
+                iou_threshold=iou,
+                min_box_area_ratio=min_box_area_ratio,
+            )
 
     def _track_persons_ultralytics(
         self,
         path: Path,
         conf: float,
         iou: float,
+        min_box_area_ratio: float,
     ) -> Dict[int, List[TrackCrop]]:
         tracks: Dict[int, List[TrackCrop]] = {}
         stream = self.yolo_model.track(
@@ -307,9 +476,9 @@ class ReIDPipelineService:
 
             xyxy = boxes.xyxy.detach().cpu().numpy()
             confs = boxes.conf.detach().cpu().numpy()
-            ids = boxes.id.detach().cpu().numpy().astype(
-                int) if boxes.id is not None else None
+            ids = boxes.id.detach().cpu().numpy().astype(int) if boxes.id is not None else None
             frame = result.orig_img
+            frame_area = max(1, int(frame.shape[0]) * int(frame.shape[1]))
 
             for idx in range(len(xyxy)):
                 if ids is None:
@@ -322,8 +491,11 @@ class ReIDPipelineService:
                 y2 = min(frame.shape[0], y2)
                 if x2 <= x1 or y2 <= y1:
                     continue
+                if ((x2 - x1) * (y2 - y1)) / frame_area < min_box_area_ratio:
+                    continue
 
-                crop = frame[y1:y2, x1:x2].copy()
+                crop_x1, crop_y1, crop_x2, crop_y2 = self._expand_bbox((x1, y1, x2, y2), frame.shape)
+                crop = frame[crop_y1:crop_y2, crop_x1:crop_x2].copy()
                 if crop.size == 0:
                     continue
 
@@ -331,9 +503,9 @@ class ReIDPipelineService:
                     frame_index=frame_index,
                     track_id=track_id,
                     confidence=float(confs[idx]),
-                    bbox_xyxy=(x1, y1, x2, y2),
+                    bbox_xyxy=(crop_x1, crop_y1, crop_x2, crop_y2),
                     crop_bgr=crop,
-                    quality_score=self._quality_score(crop),
+                    quality_score=self._quality_score(crop, confidence=float(confs[idx])),
                 )
                 tracks.setdefault(track_id, []).append(item)
         return tracks
@@ -364,6 +536,7 @@ class ReIDPipelineService:
         path: Path,
         conf: float,
         iou_threshold: float = 0.5,
+        min_box_area_ratio: float = 0.001,
         max_missed: int = 20,
     ) -> Dict[int, List[TrackCrop]]:
         """
@@ -385,7 +558,7 @@ class ReIDPipelineService:
             result_list = self.yolo_model.predict(
                 source=frame,
                 conf=conf,
-                iou=0.5,
+                iou=iou_threshold,
                 classes=[0],
                 verbose=False,
             )
@@ -400,6 +573,7 @@ class ReIDPipelineService:
 
             boxes = result_list[0].boxes
             detections: List[Tuple[Tuple[int, int, int, int], float]] = []
+            frame_area = max(1, int(frame.shape[0]) * int(frame.shape[1]))
             if boxes is not None and len(boxes) > 0:
                 xyxy = boxes.xyxy.detach().cpu().numpy()
                 confs = boxes.conf.detach().cpu().numpy()
@@ -410,6 +584,8 @@ class ReIDPipelineService:
                     x2 = min(frame.shape[1], x2)
                     y2 = min(frame.shape[0], y2)
                     if x2 <= x1 or y2 <= y1:
+                        continue
+                    if ((x2 - x1) * (y2 - y1)) / frame_area < min_box_area_ratio:
                         continue
                     detections.append(((x1, y1, x2, y2), float(confs[idx])))
 
@@ -437,20 +613,20 @@ class ReIDPipelineService:
                     matched_detection_ids.add(best_det)
 
                     x1, y1, x2, y2 = det_box
-                    crop = frame[y1:y2, x1:x2].copy()
+                    crop_x1, crop_y1, crop_x2, crop_y2 = self._expand_bbox(det_box, frame.shape)
+                    crop = frame[crop_y1:crop_y2, crop_x1:crop_x2].copy()
                     if crop.size > 0:
                         item = TrackCrop(
                             frame_index=frame_index,
                             track_id=track_id,
                             confidence=det_conf,
-                            bbox_xyxy=det_box,
+                            bbox_xyxy=(crop_x1, crop_y1, crop_x2, crop_y2),
                             crop_bgr=crop,
-                            quality_score=self._quality_score(crop),
+                            quality_score=self._quality_score(crop, confidence=det_conf),
                         )
                         tracks.setdefault(track_id, []).append(item)
                 else:
-                    active[track_id]["missed"] = int(
-                        active[track_id]["missed"]) + 1
+                    active[track_id]["missed"] = int(active[track_id]["missed"]) + 1
                     if int(active[track_id]["missed"]) > max_missed:
                         del active[track_id]
 
@@ -463,15 +639,16 @@ class ReIDPipelineService:
                 active[track_id] = {"bbox": det_box, "missed": 0}
 
                 x1, y1, x2, y2 = det_box
-                crop = frame[y1:y2, x1:x2].copy()
+                crop_x1, crop_y1, crop_x2, crop_y2 = self._expand_bbox(det_box, frame.shape)
+                crop = frame[crop_y1:crop_y2, crop_x1:crop_x2].copy()
                 if crop.size > 0:
                     item = TrackCrop(
                         frame_index=frame_index,
                         track_id=track_id,
                         confidence=det_conf,
-                        bbox_xyxy=det_box,
+                        bbox_xyxy=(crop_x1, crop_y1, crop_x2, crop_y2),
                         crop_bgr=crop,
-                        quality_score=self._quality_score(crop),
+                        quality_score=self._quality_score(crop, confidence=det_conf),
                     )
                     tracks.setdefault(track_id, []).append(item)
 
@@ -482,13 +659,67 @@ class ReIDPipelineService:
 
     def select_best_frames(self, tracks: Dict[int, List[TrackCrop]]) -> Dict[int, TrackCrop]:
         """
-        Select highest-quality crop for each track.
+        Select the most reliable high-quality crop for each track.
+        We smooth per-frame quality and rank candidates with a robust score
+        to avoid one-frame outliers.
         """
         best: Dict[int, TrackCrop] = {}
         for track_id, items in tracks.items():
             if not items:
                 continue
-            best[track_id] = max(items, key=lambda x: x.quality_score)
+            if len(items) == 1:
+                best[track_id] = items[0]
+                continue
+
+            ordered = sorted(items, key=lambda x: x.frame_index)
+            raw_quality = np.array([max(0.0, float(it.quality_score)) for it in ordered], dtype=np.float32)
+            smooth_quality = self._smooth_track_scores(raw_quality)
+
+            quality_floor = float(np.percentile(smooth_quality, 30.0))
+            candidate_indices = [i for i, q in enumerate(smooth_quality.tolist()) if q >= quality_floor]
+            if not candidate_indices:
+                candidate_indices = list(range(len(ordered)))
+
+            candidate_quality = smooth_quality[candidate_indices]
+            q_min = float(candidate_quality.min())
+            q_max = float(candidate_quality.max())
+            q_span = q_max - q_min
+
+            frame_idx = np.array([float(it.frame_index) for it in ordered], dtype=np.float32)
+            frame_min = float(frame_idx.min())
+            frame_max = float(frame_idx.max())
+            frame_center = 0.5 * (frame_min + frame_max)
+            frame_half_span = max(1.0, 0.5 * (frame_max - frame_min))
+
+            areas = np.array([float(self._bbox_area(it.bbox_xyxy)) for it in ordered], dtype=np.float32)
+            area_ref = max(float(np.percentile(areas, 90.0)), 1.0)
+
+            chosen_idx = candidate_indices[0]
+            chosen_score = -1.0
+            for idx in candidate_indices:
+                if q_span < 1e-6:
+                    quality_norm = 1.0
+                else:
+                    quality_norm = float(np.clip((smooth_quality[idx] - q_min) / q_span, 0.0, 1.0))
+
+                temporal_score = float(
+                    np.clip(1.0 - abs(float(frame_idx[idx]) - frame_center) / frame_half_span, 0.0, 1.0)
+                )
+                area_score = float(np.clip(np.log1p(float(areas[idx])) / np.log1p(area_ref), 0.0, 1.0))
+                conf_score = float(np.clip(float(ordered[idx].confidence), 0.0, 1.0))
+
+                robust_score = (
+                    0.68 * quality_norm
+                    + 0.14 * temporal_score
+                    + 0.10 * area_score
+                    + 0.08 * conf_score
+                )
+
+                if robust_score > chosen_score:
+                    chosen_score = robust_score
+                    chosen_idx = idx
+
+            best[track_id] = ordered[chosen_idx]
         return best
 
     def _save_track_crop(self, crop: TrackCrop, output_dir: Path) -> str:
@@ -498,7 +729,8 @@ class ReIDPipelineService:
         output_dir.mkdir(parents=True, exist_ok=True)
         file_name = f"track_{crop.track_id:04d}_frame_{crop.frame_index:06d}.jpg"
         output_path = output_dir / file_name
-        ok = cv2.imwrite(str(output_path), crop.crop_bgr)
+        visual_crop = self._prepare_visual_crop(crop.crop_bgr)
+        ok = cv2.imwrite(str(output_path), visual_crop)
         if not ok:
             raise RuntimeError(f"Failed to save track crop: {output_path}")
         return output_path.as_posix()
@@ -537,7 +769,7 @@ class ReIDPipelineService:
         flat_axes = axes.flatten()
         for idx, (track_id, crop) in enumerate(items):
             ax = flat_axes[idx]
-            rgb = cv2.cvtColor(crop.crop_bgr, cv2.COLOR_BGR2RGB)
+            rgb = cv2.cvtColor(self._prepare_visual_crop(crop.crop_bgr), cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
             ax.set_title(
                 f"track={track_id}\nframe={crop.frame_index} q={crop.quality_score:.2f}",
@@ -575,6 +807,34 @@ class ReIDPipelineService:
         emb, _, _, _, _, _ = self.reid_model(tensor)
         return emb.squeeze(0).detach().cpu().numpy().astype(np.float32)
 
+    @torch.no_grad()
+    def classify_crop_known_unknown(self, crop_bgr: np.ndarray) -> Dict:
+        rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        tensor = self.classifier_transform(img).unsqueeze(0).to(self.device)
+        logits = self._get_classifier_model()(tensor)
+        if isinstance(logits, (list, tuple)):
+            logits = logits[0]
+        if logits.ndim == 1:
+            logits = logits.unsqueeze(0)
+
+        probs = torch.softmax(logits, dim=1).squeeze(0)
+        known_prob = float(probs[0].item())
+        unknown_prob = float(probs[1].item())
+        is_known = known_prob >= self.classification_known_threshold
+        confidence = known_prob if is_known else unknown_prob
+
+        return {
+            "label": "known" if is_known else "unknown",
+            "display_label": "Quen" if is_known else "La",
+            "classification_confidence": confidence,
+            "threshold": self.classification_known_threshold,
+            "classification_probs": {
+                "known": known_prob,
+                "unknown": unknown_prob,
+            },
+        }
+
     def load_known_gallery(self, gallery_npz_path: str = "known_gallery/gallery_embeddings.npz") -> None:
         path = self._resolve_relative_path(gallery_npz_path)
         self.gallery.load_npz(path)
@@ -588,13 +848,11 @@ class ReIDPipelineService:
         output_path = self._resolve_relative_path(output_npz_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.gallery.build_from_directory(
-            images_dir, embed_fn=self.embed_image, recursive=True)
+        self.gallery.build_from_directory(images_dir, embed_fn=self.embed_image, recursive=True)
         self.gallery.save_npz(output_path)
 
     def compare_with_gallery(self, query_embedding: np.ndarray, topk: int = 5) -> Dict:
-        top_matches = self.gallery.search_topk(
-            query_embedding=query_embedding, topk=topk)
+        top_matches = self.gallery.search_topk(query_embedding=query_embedding, topk=topk)
         if not top_matches:
             return {
                 "label": "unknown",
@@ -609,6 +867,7 @@ class ReIDPipelineService:
             "label": "known" if is_known else "unknown",
             "person_id": best["person_id"] if is_known else "unknown",
             "best_similarity": float(best["similarity"]),
+            "threshold": self.known_threshold,
             "topk": top_matches,
         }
 
@@ -621,7 +880,7 @@ class ReIDPipelineService:
             "label": raw_result.get("label", "unknown"),
             "person_id": raw_result.get("person_id", "unknown"),
             "best_similarity": round(float(raw_result.get("best_similarity", 0.0)), decimals),
-            "threshold": self.known_threshold,
+            "threshold": float(raw_result.get("threshold", self.known_threshold)),
             "topk": [
                 {
                     "rank": int(item.get("rank", idx + 1)),
@@ -639,8 +898,22 @@ class ReIDPipelineService:
         """
         formatted_items: List[Dict] = []
         for item in video_result.get("results", []):
-            prediction = self.format_match_result(
-                item.get("prediction", {}), decimals=decimals)
+            prediction = self.format_match_result(item.get("prediction", {}), decimals=decimals)
+            raw_pred = item.get("prediction", {}) or {}
+            if raw_pred.get("mode"):
+                prediction["mode"] = str(raw_pred.get("mode"))
+            if raw_pred.get("classification_confidence") is not None:
+                prediction["classification_confidence"] = round(
+                    float(raw_pred.get("classification_confidence")), decimals
+                )
+            if raw_pred.get("display_label"):
+                prediction["display_label"] = str(raw_pred.get("display_label"))
+            if raw_pred.get("classification_probs"):
+                probs = raw_pred.get("classification_probs") or {}
+                prediction["classification_probs"] = {
+                    "known": round(float(probs.get("known", 0.0)), decimals),
+                    "unknown": round(float(probs.get("unknown", 0.0)), decimals),
+                }
             formatted_items.append(
                 {
                     "track_id": int(item.get("track_id", -1)),
@@ -656,6 +929,7 @@ class ReIDPipelineService:
             "video_path": str(video_result.get("video_path", "")),
             "num_tracks": int(video_result.get("num_tracks", len(formatted_items))),
             "threshold": float(video_result.get("threshold", self.known_threshold)),
+            "mode": str(video_result.get("mode", "similarity")),
             "results": formatted_items,
         }
 
@@ -765,6 +1039,10 @@ class ReIDPipelineService:
         self,
         video_path: str,
         topk: int = 5,
+        use_classification_model: bool = False,
+        detect_confidence: Optional[float] = None,
+        detect_iou: Optional[float] = None,
+        min_box_area_ratio: Optional[float] = None,
         show_best_frames: bool = False,
         best_frames_save_path: Optional[str | Path] = None,
         best_frames_max_items: int = 30,
@@ -773,7 +1051,12 @@ class ReIDPipelineService:
         """
         Full video pipeline.
         """
-        tracks = self.track_persons(video_path=video_path)
+        tracks = self.track_persons(
+            video_path=video_path,
+            conf=detect_confidence,
+            iou=detect_iou,
+            min_box_area_ratio=min_box_area_ratio,
+        )
         best_per_track = self.select_best_frames(tracks)
         track_frames_path = self._resolve_relative_path(str(track_frames_dir))
         track_frames_path.mkdir(parents=True, exist_ok=True)
@@ -787,8 +1070,25 @@ class ReIDPipelineService:
 
         predictions = []
         for track_id, crop in sorted(best_per_track.items()):
-            emb = self.embed_crop(crop.crop_bgr)
-            ranked = self.compare_with_gallery(emb, topk=topk)
+            if use_classification_model:
+                cls_result = self.classify_crop_known_unknown(crop.crop_bgr)
+                ranked = {
+                    "mode": "classification",
+                    "label": cls_result.get("label", "unknown"),
+                    "person_id": "known" if cls_result.get("label") == "known" else "unknown",
+                    "best_similarity": float(cls_result.get("classification_confidence", 0.0)),
+                    "classification_confidence": float(cls_result.get("classification_confidence", 0.0)),
+                    "classification_probs": cls_result.get("classification_probs", {}),
+                    "display_label": cls_result.get("display_label", "La"),
+                    "threshold": float(
+                        cls_result.get("threshold", self.classification_known_threshold)
+                    ),
+                    "topk": [],
+                }
+            else:
+                emb = self.embed_crop(crop.crop_bgr)
+                ranked = self.compare_with_gallery(emb, topk=topk)
+                ranked["mode"] = "similarity"
             track_url = self._save_track_crop(crop, track_frames_path)
             predictions.append(
                 {
@@ -804,7 +1104,8 @@ class ReIDPipelineService:
         return {
             "video_path": str(self._resolve_relative_path(video_path)),
             "num_tracks": len(best_per_track),
-            "threshold": self.known_threshold,
+            "threshold": self.classification_known_threshold if use_classification_model else self.known_threshold,
+            "mode": "classification" if use_classification_model else "similarity",
             "results": predictions,
         }
 
@@ -828,7 +1129,7 @@ if __name__ == "__main__":
     service = ReIDPipelineService(
         yolo_model_path="models/yolov8_person_detection.pt",
         reid_weights_path="models/best_model_state_dict.pth",
-        known_threshold=0.8
+        known_threshold=0.75
     )
     print("✅ Service initialized")
 

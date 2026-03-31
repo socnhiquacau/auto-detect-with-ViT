@@ -6,7 +6,9 @@ import os
 import sys
 from pathlib import Path
 import tempfile
-from PIL import Image
+import shutil
+import hashlib
+from PIL import Image, ImageOps
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -99,6 +101,45 @@ if 'gallery_loaded' not in st.session_state:
     st.session_state.gallery_loaded = False
 if 'last_result' not in st.session_state:
     st.session_state.last_result = None
+if 'last_video_upload_signature' not in st.session_state:
+    st.session_state.last_video_upload_signature = None
+
+
+def build_fixed_preview(image_source, size=(220, 220), background=(245, 247, 250)):
+    if isinstance(image_source, Image.Image):
+        image = image_source.convert("RGB")
+    else:
+        image = Image.open(image_source).convert("RGB")
+
+    fitted = ImageOps.contain(image, size)
+    canvas = Image.new("RGB", size, background)
+    offset = ((size[0] - fitted.width) // 2, (size[1] - fitted.height) // 2)
+    canvas.paste(fitted, offset)
+    return canvas
+
+
+def clear_result_frame_dir(result_dir="result_frame") -> int:
+    """
+    Remove all previous track images/folders before processing a new video.
+    Returns number of removed entries.
+    """
+    target = Path(result_dir)
+    if not target.exists() or not target.is_dir():
+        return 0
+
+    removed = 0
+    for entry in target.iterdir():
+        try:
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
+                removed += 1
+            elif entry.is_dir():
+                shutil.rmtree(entry)
+                removed += 1
+        except Exception:
+            # Ignore cleanup failure for one item to avoid blocking UI.
+            continue
+    return removed
 
 # Sidebar
 with st.sidebar:
@@ -256,7 +297,7 @@ elif page == "📸 Xử lý ảnh":
     if st.session_state.service is None:
         with st.spinner("Đang khởi tạo dịch vụ..."):
             try:
-                from service import ReIDPipelineService
+                from src.pipeline.service import ReIDPipelineService
                 st.session_state.service = ReIDPipelineService(
                     yolo_model_path="models/yolov8_person_detection.pt",
                     reid_weights_path="models/best_model_state_dict.pth",
@@ -427,7 +468,7 @@ elif page == "🎬 Xử lý video":
     if st.session_state.service is None:
         with st.spinner("Đang khởi tạo dịch vụ..."):
             try:
-                from service import ReIDPipelineService
+                from src.pipeline.service import ReIDPipelineService
                 st.session_state.service = ReIDPipelineService()
                 st.markdown(
                     '<div class="success-box">✅ Khởi tạo dịch vụ thành công!</div>', unsafe_allow_html=True)
@@ -453,17 +494,40 @@ elif page == "🎬 Xử lý video":
     col1, col2 = st.columns([1, 2])
 
     with col1:
-        topk = st.slider("Số kết quả khớp", min_value=1,
-                         max_value=10, value=5, key="video_topk")
+        use_classification_model = st.checkbox(
+            "Dùng model phân loại",
+            value=False,
+            key="video_use_classification_model",
+            help="Bật để phân loại Quen/Lạ. Khi bật sẽ ẩn so sánh giống ai và độ tương đồng.",
+        )
+        st.caption("YOLO config co dinh: confidence=0.85, IoU=0.70, min_box_area_ratio=0.0200")
+        if use_classification_model:
+            topk = 1
+            st.caption("Chế độ phân loại: top-k và độ tương đồng được tắt.")
+        else:
+            topk = st.slider("Số kết quả khớp", min_value=1,
+                             max_value=10, value=5, key="video_topk")
         process_btn = st.button("🎬 Xử lý Video", type="primary")
 
     if uploaded_video is not None:
+        video_bytes = uploaded_video.getvalue()
+        current_video_signature = (
+            f"{uploaded_video.name}:{len(video_bytes)}:"
+            f"{hashlib.md5(video_bytes).hexdigest()}"
+        )
+
+        if st.session_state.last_video_upload_signature != current_video_signature:
+            removed_count = clear_result_frame_dir("result_frame")
+            st.session_state.last_video_upload_signature = current_video_signature
+            if removed_count > 0:
+                st.caption(f"🧹 Đã dọn {removed_count} ảnh/nhóm track cũ trong thư mục `result_frame`.")
+
         st.video(uploaded_video)
 
         if process_btn:
             # Save temp file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-                tmp_file.write(uploaded_video.getvalue())
+                tmp_file.write(video_bytes)
                 tmp_path = tmp_file.name
 
             progress_bar = st.progress(0)
@@ -474,7 +538,10 @@ elif page == "🎬 Xử lý video":
                     "Đang xử lý video... Có thể mất vài phút ⏳")
 
                 raw_result = st.session_state.service.process_video(
-                    tmp_path, topk=topk)
+                    tmp_path,
+                    topk=topk,
+                    use_classification_model=use_classification_model,
+                )
                 formatted = st.session_state.service.format_video_result(
                     raw_result)
 
@@ -487,47 +554,255 @@ elif page == "🎬 Xử lý video":
                 # Summary stats
                 col1, col2, col3 = st.columns(3)
 
-                num_tracks = raw_result.get('num_tracks', 0)
-                results = raw_result.get('results', [])
+                num_tracks = formatted.get('num_tracks', 0)
+                results = formatted.get('results', [])
                 known_tracks = len(
-                    set([r['track_id'] for r in results if r.get('matched_person')]))
+                    [r for r in results if r.get('prediction', {}).get('label') == 'known'])
+                unknown_tracks = max(num_tracks - known_tracks, 0)
 
                 with col1:
                     st.metric("Tổng số Track", num_tracks)
                 with col2:
                     st.metric("Người đã biết", known_tracks)
                 with col3:
-                    st.metric("Chưa biết", num_tracks - known_tracks)
+                    st.metric("Chưa biết", unknown_tracks)
 
                 # Results table
                 if results:
-                    df_results = pd.DataFrame(results)
+                    is_classification_mode = formatted.get('mode', 'similarity') == 'classification'
+                    detail_rows = []
+                    for item in results:
+                        prediction = item.get('prediction', {})
+                        label = prediction.get('label', 'unknown')
+
+                        if is_classification_mode:
+                            classification_confidence = float(
+                                prediction.get('classification_confidence', prediction.get('best_similarity', 0.0))
+                            )
+                            final_name = 'Nguoi quen' if label == 'known' else 'Nguoi la'
+                            detail_rows.append(
+                                {
+                                    "track_id": item.get('track_id', -1),
+                                    "frame_index": item.get('frame_index', -1),
+                                    "ket_luan": final_name,
+                                    "nhan": "Quen" if label == 'known' else "La",
+                                    "do_tin_cay_phan_loai": classification_confidence,
+                                }
+                            )
+                        else:
+                            person_id = prediction.get('person_id') or 'unknown'
+                            final_name = person_id if label == 'known' else 'Nguoi la'
+                            detail_rows.append(
+                                {
+                                    "track_id": item.get('track_id', -1),
+                                    "frame_index": item.get('frame_index', -1),
+                                    "ket_luan": final_name,
+                                    "nhan": "Da biet" if label == 'known' else "Nguoi la",
+                                    "do_tuong_dong_cao_nhat": prediction.get('best_similarity', 0.0),
+                                    "nguong": prediction.get('threshold', formatted.get('threshold', 0.0)),
+                                }
+                            )
+
+                    df_results = pd.DataFrame(detail_rows)
 
                     st.markdown("### 📋 Chi tiết Phát hiện")
                     st.dataframe(df_results, use_container_width=True)
 
-                    # Person distribution
-                    if 'matched_person' in df_results.columns:
-                        person_counts = df_results[df_results['matched_person'].notna(
-                        )]['matched_person'].value_counts()
-
-                        st.markdown("### 👥 Phân bố Người")
-                        fig = px.pie(
-                            values=person_counts.values,
-                            names=person_counts.index,
-                            title='Phân bố Người Được Phát hiện'
+                    if is_classification_mode:
+                        st.markdown("### Tong quan do tin cay phan loai")
+                        fig_summary = px.bar(
+                            df_results,
+                            x='track_id',
+                            y='do_tin_cay_phan_loai',
+                            color='nhan',
+                            text='ket_luan',
+                            title='Do tin cay phan loai theo tung track',
+                            labels={
+                                'track_id': 'Track ID',
+                                'do_tin_cay_phan_loai': 'Do tin cay',
+                                'nhan': 'Phan loai',
+                            },
+                            color_discrete_map={'Quen': '#2E8B57', 'La': '#DC3545'},
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.markdown("### Tổng quan độ tương đồng")
+                        fig_summary = px.bar(
+                            df_results,
+                            x='track_id',
+                            y='do_tuong_dong_cao_nhat',
+                            color='nhan',
+                            text='ket_luan',
+                            title='Độ tương đồng cao nhất theo từng track',
+                            labels={
+                                'track_id': 'Track ID',
+                                'do_tuong_dong_cao_nhat': 'Độ tương đồng',
+                                'nhan': 'Phân loại',
+                            },
+                            color_discrete_map={'Đã biết': '#2E8B57', 'Người lạ': '#DC3545'},
+                        )
 
-                    # Download results
-                    st.markdown("### 💾 Tải xuống Kết quả")
-                    csv = df_results.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Tải xuống CSV",
-                        data=csv,
-                        file_name="video_results.csv",
-                        mime="text/csv"
+                    fig_summary.update_traces(textposition='outside')
+                    fig_summary.update_yaxes(range=[0, 1])
+                    chart_left, chart_center, chart_right = st.columns([1, 3, 1])
+                    with chart_center:
+                        st.plotly_chart(fig_summary, use_container_width=True)
+
+                    person_counts = pd.Series(
+                        [row['ket_luan'] for row in detail_rows]
+                    ).value_counts()
+                    fig_distribution = px.pie(
+                        values=person_counts.values,
+                        names=person_counts.index,
+                        title='Phân bố kết luận nhận dạng'
                     )
+                    pie_left, pie_center, pie_right = st.columns([1, 3, 1])
+                    with pie_center:
+                        st.plotly_chart(fig_distribution, use_container_width=True)
+
+                    st.markdown("### Chi tiết từng track")
+                    for index, item in enumerate(results, start=1):
+                        prediction = item.get('prediction', {})
+                        top_matches = prediction.get('topk', [])
+                        label = prediction.get('label', 'unknown')
+                        track_id = item.get('track_id', -1)
+                        frame_index = item.get('frame_index', -1)
+
+                        if is_classification_mode:
+                            classification_confidence = float(
+                                prediction.get('classification_confidence', prediction.get('best_similarity', 0.0))
+                            )
+                            final_name = 'Nguoi quen' if label == 'known' else 'Nguoi la'
+                            expander_title = (
+                                f"Track #{track_id} | Ket luan: {final_name} | "
+                                f"Do tin cay: {classification_confidence:.2%}"
+                            )
+                        else:
+                            person_id = prediction.get('person_id') or 'unknown'
+                            best_similarity = float(prediction.get('best_similarity', 0.0))
+                            threshold = float(prediction.get('threshold', formatted.get('threshold', 0.0)))
+                            final_name = person_id if label == 'known' else 'Người lạ'
+                            expander_title = (
+                                f"Track #{track_id} | Kết luận: {final_name} | "
+                                f"Độ tương đồng: {best_similarity:.2%}"
+                            )
+
+                        with st.expander(expander_title, expanded=index == 1):
+                            left_col, right_col = st.columns([1, 1.5])
+
+                            with left_col:
+                                st.markdown("#### Ảnh cắt từ video")
+                                track_image_path = item.get('track_url', '')
+                                if track_image_path and os.path.exists(track_image_path):
+                                    track_img = build_fixed_preview(track_image_path, size=(240, 240))
+                                    st.image(
+                                        track_img,
+                                        caption=f"Track #{track_id} - Frame {frame_index}",
+                                        width=240,
+                                    )
+                                else:
+                                    st.info("Không có ảnh track để hiển thị")
+
+                                st.markdown(f"**Frame:** `{frame_index}`")
+
+                            with right_col:
+                                box_class = "success-box" if label == "known" else "warning-box"
+
+                                if is_classification_mode:
+                                    classification_confidence = float(
+                                        prediction.get('classification_confidence', prediction.get('best_similarity', 0.0))
+                                    )
+                                    conclusion_text = (
+                                        "Ket luan: <b>Nguoi quen</b>" if label == "known"
+                                        else "Ket luan: <b>Nguoi la</b>"
+                                    )
+                                    st.markdown(
+                                        (
+                                            f'<div class="{box_class}">{conclusion_text}<br>'
+                                            f'Do tin cay phan loai: <b>{classification_confidence:.2%}</b></div>'
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                                    st.markdown("**Do tin cay phan loai:**")
+                                    st.progress(min(max(classification_confidence, 0.0), 1.0))
+                                else:
+                                    best_similarity = float(prediction.get('best_similarity', 0.0))
+                                    threshold = float(prediction.get('threshold', formatted.get('threshold', 0.0)))
+                                    conclusion_text = (
+                                        f"Kết luận: <b>{final_name}</b>"
+                                        if label == "known"
+                                        else "Kết luận: <b>Người lạ</b>"
+                                    )
+                                    st.markdown(
+                                        (
+                                            f'<div class="{box_class}">{conclusion_text}<br>'
+                                            f'Độ tương đồng cao nhất: <b>{best_similarity:.2%}</b><br>'
+                                            f'Ngưỡng nhận dạng: <b>{threshold:.2%}</b></div>'
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                                    st.markdown("**Độ tương đồng cao nhất:**")
+                                    st.progress(min(max(best_similarity, 0.0), 1.0))
+
+                                    if top_matches:
+                                        match_cols = st.columns(min(len(top_matches), 3))
+                                        for rank, match in enumerate(top_matches, start=1):
+                                            similarity = float(match.get('similarity', 0.0))
+                                            match_person = match.get('person_id', 'unknown')
+                                            img_path = match.get('image_path') or match.get('img_path', '')
+                                            with match_cols[(rank - 1) % len(match_cols)]:
+                                                st.markdown(
+                                                    """
+                                                    <div style="background-color: #f8f9fa; padding: 0.75rem;
+                                                                border-radius: 10px; border-left: 4px solid #667eea;
+                                                                margin-bottom: 1rem;">
+                                                    """,
+                                                    unsafe_allow_html=True,
+                                                )
+                                                st.markdown(f"**#{rank} - {match_person}**")
+                                                if img_path and os.path.exists(img_path):
+                                                    ref_img = build_fixed_preview(img_path, size=(180, 180))
+                                                    st.image(
+                                                        ref_img,
+                                                        width=180,
+                                                        caption="Tham chiếu",
+                                                    )
+                                                else:
+                                                    st.info("Không có ảnh")
+                                                st.markdown(f"**Độ tương đồng:** {similarity:.2%}")
+                                                st.progress(min(max(similarity, 0.0), 1.0))
+                                                st.markdown("</div>", unsafe_allow_html=True)
+
+                                        chart_df = pd.DataFrame(
+                                            [
+                                                {
+                                                    "person_id": match.get('person_id', 'unknown'),
+                                                    "similarity": float(match.get('similarity', 0.0)),
+                                                }
+                                                for match in top_matches
+                                            ]
+                                        )
+                                        fig_track = px.bar(
+                                            chart_df,
+                                            x='person_id',
+                                            y='similarity',
+                                            title=f'Biểu đồ độ tương đồng - Track #{track_id}',
+                                            labels={
+                                                'similarity': 'Độ tương đồng',
+                                                'person_id': 'ID người',
+                                            },
+                                            color='similarity',
+                                            color_continuous_scale='RdYlGn'
+                                        )
+                                        fig_track.update_yaxes(range=[0, 1])
+                                        track_chart_left, track_chart_center, track_chart_right = st.columns([1, 3, 1])
+                                        with track_chart_center:
+                                            st.plotly_chart(fig_track, use_container_width=True)
+                                    else:
+                                        st.markdown(
+                                            '<div class="warning-box">Không có ảnh tham chiếu phù hợp cho track này.</div>',
+                                            unsafe_allow_html=True,
+                                        )
+
 
             except Exception as e:
                 st.markdown(
@@ -537,6 +812,8 @@ elif page == "🎬 Xử lý video":
             finally:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
+    else:
+        st.session_state.last_video_upload_signature = None
 
 
 # =====================================
@@ -747,7 +1024,7 @@ elif page == "👥 Quản lý thư viện":
                 if persons and total_images > 0:
                     with st.spinner("Đang xây dựng embeddings thư viện..."):
                         try:
-                            from service import ReIDPipelineService
+                            from src.pipeline.service import ReIDPipelineService
                             service = ReIDPipelineService()
                             service.build_known_gallery(
                                 "known_gallery", gallery_path)

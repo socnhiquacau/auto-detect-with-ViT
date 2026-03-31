@@ -11,6 +11,7 @@ ADD KNOWN PERSONS - PRODUCTION SAFE VERSION
 import os
 import re
 import gc
+import sys
 import cv2
 import time
 import torch
@@ -20,13 +21,17 @@ from datetime import datetime
 from collections import defaultdict
 from pymongo import MongoClient
 
-import image_enhancement
-from common import DataLoader
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.pipeline import image_enhancement
+from src.core.common import DataLoader
 
 # =========================
 # CONFIG
 # =========================
-KNOWN_PERSONS_DIR = "known_persons"
+KNOWN_PERSONS_DIR = PROJECT_ROOT / "known_persons"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 IMAGE_SIZE = (224, 224)

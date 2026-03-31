@@ -10,9 +10,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
 
-from database import Database
+from src.core.database import Database
 # Import processing modules
-from video_processor import VideoProcessor
+from src.pipeline.video_processor import VideoProcessor
 
 # Load environment variables from .env file
 load_dotenv()
