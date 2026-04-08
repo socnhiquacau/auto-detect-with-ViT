@@ -160,18 +160,7 @@ with st.sidebar:
 
     st.markdown(f"**Mô hình YOLO:** {'✅' if yolo_exists else '❌'}")
     st.markdown(f"**Mô hình ReID:** {'✅' if reid_exists else '❌'}")
-    st.markdown(
-        f"**Thư viện:** {'✅ Đã tải' if st.session_state.gallery_loaded else '⏳ Chưa tải'}")
-
-    st.markdown("---")
-    st.markdown("### ℹ️ Thông tin")
-    st.markdown("""
-    Hệ thống Phát hiện & Nhận dạng Người sử dụng:
-    - YOLOv8 để phát hiện
-    - Mô hình ReID để nhận dạng
-    - Streamlit cho giao diện
-    """)
-
+ 
 
 # =====================================
 # HOME PAGE
@@ -229,13 +218,6 @@ if page == "🏠 Trang chủ":
         - Phát hiện tất cả người
         - Khớp với thư viện đã biết
         - Xem điểm tin cậy
-
-        #### 👥 Quản lý Thư viện
-        - **Tạo nhân vật mới** và upload ảnh
-        - **Thêm ảnh** vào nhân vật có sẵn
-        - Xây dựng cơ sở dữ liệu embeddings
-        - Xem thống kê và preview ảnh
-        - Không cần thao tác thủ công!
         """)
 
     with col2:
@@ -258,18 +240,7 @@ if page == "🏠 Trang chủ":
     # Getting started
     st.markdown("### 🎓 Hướng dẫn Bắt đầu")
 
-    with st.expander("1️⃣ Thiết lập Thư viện Người Đã biết"):
-        st.markdown("""
-        1. Đi đến trang **👥 Quản lý Thư viện**
-        2. Chọn tab **🆕 Tạo nhân vật mới**
-        3. Nhập tên nhân vật và upload ảnh (có thể chọn nhiều ảnh cùng lúc)
-        4. Nhấn **🚀 Tạo nhân vật & Lưu ảnh**
-        5. Nhấn **🔨 Xây dựng Thư viện** để tạo embeddings
-        
-        💡 Có thể upload thêm ảnh bất cứ lúc nào qua tab **📸 Thêm ảnh vào nhân vật có sẵn**
-        """)
-
-    with st.expander("2️⃣ Xử lý Ánh"):
+    with st.expander("1️⃣ Xử lý Ánh"):
         st.markdown("""
         1. Đi đến trang **📸 Xử lý Ảnh**
         2. Tải lên một ảnh
@@ -1174,6 +1145,6 @@ elif page == "⚙️ Cài đặt":
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray; padding: 1rem;'>
-    🎯 Hệ thống Phát hiện & Nhận dạng Người | Xây dựng bằng Streamlit | 2026
+    🎯 Hệ thống Phát hiện & Nhận dạng Người | 2026
 </div>
 """, unsafe_allow_html=True)

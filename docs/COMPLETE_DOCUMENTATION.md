@@ -3,6 +3,9 @@
 > **Comprehensive documentation for DHT Person Recognition System**  
 > **Last Updated:** March 8, 2026  
 > **Version:** 1.0
+>
+> **Note (April 1, 2026):** This file contains legacy API/FastAPI sections.
+> Current codebase is Streamlit-only and no longer includes `main.py`, `VideoProcessor`, or MongoDB API routes.
 
 ---
 

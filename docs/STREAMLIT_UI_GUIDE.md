@@ -429,9 +429,9 @@ Page `Quan ly thu vien` phu thuoc:
 - thao tac file tren `known_gallery/`
 - `ReIDPipelineService.build_known_gallery()`
 
-UI khong goi truc tiep `VideoProcessor`.
+UI khong goi truc tiep module API cu.
 
-`VideoProcessor` chi duoc dung boi FastAPI trong `main.py`.
+Hien tai codebase chay theo huong Streamlit + `ReIDPipelineService`.
 
 ## 17. Known Limitations
 
