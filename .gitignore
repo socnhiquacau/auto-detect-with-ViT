@@ -30,6 +30,7 @@ DATABASE/
 known_persons/
 
 # Environment
+venv/
 env/
 .Python
 

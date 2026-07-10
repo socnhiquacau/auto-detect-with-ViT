@@ -1,130 +1,147 @@
-# Documentation for the Source Code
+# Source Documentation (Streamlit-Only)
 
-## Overview
-This document provides an overview and explanation of the source code files in the project. It includes details about the purpose of each file, key functions, and how they interact with each other.
+## 1. Muc tieu
+Tai lieu nay mo ta codebase hien tai sau khi loai bo FastAPI/API va phan DB lien quan.
 
----
+Phu hop cho:
+- onboarding thanh vien moi
+- tra cuu nhanh luong xu ly UI
+- bao tri pipeline ReID
 
-## File Descriptions
+## 2. Cau truc thu muc
 
-### 1. `add_known_persons.py`
-- **Purpose**: Handles the addition of known persons by extracting features from images in the `known_persons` directory.
-- **Key Features**:
-  - Processes images and groups them by person.
-  - Extracts feature vectors for each image.
-  - Saves the extracted features into the database.
-- **Notes**:
-  - Refactor to use common functions and environment variables.
-  - Ensure methods are modular and not dependent on `arg[]`.
+```text
+DHT/
+|-- streamlit_app.py
+|-- run_ui.sh
+|-- source_documentation.md
+|-- src/
+|   |-- __init__.py
+|   |-- core/
+|   |   |-- __init__.py
+|   |   `-- common.py
+|   `-- pipeline/
+|       |-- __init__.py
+|       |-- image_enhancement.py
+|       |-- feature_extractor.py
+|       |-- feature_comparison.py
+|       `-- service.py
+|-- scripts/
+|   |-- check_model.py
+|   `-- make_mevid_subset_fixed.py
+|-- docs/
+|-- models/
+|-- known_gallery/
+|-- result_frame/
+|-- output/
+|-- temp/
+`-- uploads/
+```
 
-### 2. `common.py`
-- **Purpose**: Contains utility functions and shared logic used across the project.
-- **Key Features**:
-  - Provides reusable functions for logging, configuration, and other common tasks.
+## 3. Entry points
 
-### 3. `database.py`
-- **Purpose**: Manages database interactions.
-- **Key Features**:
-  - Handles database connections and queries.
-  - Provides functions for saving and retrieving data.
+### 3.1 Streamlit UI
+- File: `streamlit_app.py`
+- Chuc nang:
+- Giao dien thao tac cho xu ly anh/video
+- Quan ly thu vien `known_gallery`
+- Su dung `ReIDPipelineService` tu `src/pipeline/service.py`
 
-### 4. `feature_comparison.py`
-- **Purpose**: Compares feature vectors to identify similarities between images.
-- **Key Features**:
-  - Implements algorithms for feature comparison.
-  - Provides a class-based structure for modularity.
+### 3.2 Python service (standalone)
+- File: `src/pipeline/service.py`
+- Chuc nang:
+- Pipeline nhan dien end-to-end
+- Track person trong video
+- Chon frame chat luong tot nhat cho moi track
+- Embed va compare voi gallery
 
-### 5. `feature_extractor.py`
-- **Purpose**: Extracts feature vectors from images.
-- **Key Features**:
-  - Uses pre-trained models to generate feature vectors.
-  - Supports batch processing of images.
+## 4. Module core (`src/core`)
 
-### 6. `image_enhancement.py`
-- **Purpose**: Enhances image quality for better feature extraction.
-- **Key Features**:
-  - Provides functions for image preprocessing.
-  - Includes methods for resizing, denoising, and normalization.
+### 4.1 `common.py`
+- Vai tro: Utility + data/model loader dung chung.
+- Noi dung chinh:
+- Config preprocess (`TARGET_SIZE`, `MEAN`, `STD`)
+- `find_model_file()` tim model trong `models/`
+- `load_model_from_models()` load model tu local file
+- `DataLoader`:
+- `get_yolo_model()`
+- `get_feature_extractor()`
+- `preprocess_image()/preprocess_pil()/preprocess_cv2()`
 
-### 7. `main.py`
-- **Purpose**: Entry point for the application.
-- **Key Features**:
-  - Initializes the application.
-  - Handles command-line arguments and starts the appropriate processes.
+## 5. Module pipeline (`src/pipeline`)
 
-### 8. `make_mevid_subset_fixed.py`
-- **Purpose**: Processes video datasets to create subsets.
-- **Key Features**:
-  - Extracts frames from videos.
-  - Filters and organizes frames based on specific criteria.
+### 5.1 `image_enhancement.py`
+- Class `ImageEnhancer` cho enhancement anh.
+- Cung cap wrapper module-level `enhance(image)`.
 
-### 9. `models.py`
-- **Purpose**: Defines machine learning models used in the project.
-- **Key Features**:
-  - Loads pre-trained models.
-  - Provides functions for inference and training.
+### 5.2 `feature_extractor.py`
+- Class `FeatureExtractor`.
+- Load model thong qua `src.core.common.load_model_from_models`.
+- Tra feature vector da normalize (L2).
 
-### 10. `video_processor.py`
-- **Purpose**: Handles video processing tasks.
-- **Key Features**:
-  - Extracts frames from videos.
-  - Applies feature extraction and enhancement to video frames.
+### 5.3 `feature_comparison.py`
+- Tool test nhanh so sanh 2 anh bang cosine similarity.
 
----
+### 5.4 `service.py`
+- Module chinh cho nhan dien va tracking.
+- Classes:
+- `TrackCrop`
+- `ETFFM_Lite`
+- `ReIDModel`
+- `KnownGalleryManager`
+- `ReIDPipelineService`
 
-## Directory Structure
+- Ham quan trong cua `ReIDPipelineService`:
+- tracking: `track_persons()`, `_track_persons_ultralytics()`, `_track_persons_iou_fallback()`
+- scoring: `_quality_score()`, `select_best_frames()`
+- embedding: `embed_image()`, `embed_crop()`
+- gallery: `load_known_gallery()`, `build_known_gallery()`, `compare_with_gallery()`
+- API su dung truc tiep tu UI: `process_query_image()`, `process_video()`, `format_video_result()`
 
-### `DATABASE/`
-- Contains scripts and configurations for database setup and management.
-- **Key Files**:
-  - `setup_database.py`: Sets up the database schema.
-  - `import_data.py`: Imports data into the database.
+## 6. Scripts (`scripts/`)
 
-### `known_persons/`
-- Stores images of known persons.
-- Images are named using the format `name_number` (e.g., `hl_1.png`).
+### 6.1 `check_model.py`
+- Script inspect noi dung checkpoint model `.pth`.
 
-### `models/`
-- Stores pre-trained models and related files.
-- **Key Files**:
-  - `dino_vits16_epoch100.pth`: Pre-trained model for feature extraction.
-  - `yolov8_person_detection.pt`: Model for person detection.
+### 6.2 `make_mevid_subset_fixed.py`
+- Tao subset MEVID theo rule open-set.
 
-### `output/`
-- Stores output files such as detected images and logs.
+## 7. Luong du lieu UI
 
-### `temp/`
-- Temporary directory for intermediate files.
+### 7.1 Luong `streamlit_app.py` + `ReIDPipelineService`
+1. Khoi tao service.
+2. Load gallery embeddings (`known_gallery/gallery_embeddings.npz`).
+3. Xu ly anh/video tu giao dien.
+4. Hien thi top-k, thong ke, va anh track.
+5. Build/reload gallery tu `known_gallery/`.
 
-### `uploads/`
-- Directory for uploaded files.
+## 8. Thu muc du lieu runtime
+- `models/`: trong so model (`.pt`, `.pth`)
+- `known_gallery/`: gallery theo person + `gallery_embeddings.npz`
+- `uploads/`: tep upload
+- `temp/`: tep tam
+- `result_frame/`: anh best-frame moi track
+- `output/`: output phu tro
 
----
+## 9. Bien moi truong quan trong
+- `YOLO_MODEL_PATH`
+- `VIT_MODEL_PATH`
 
-## Common Issues and Debugging
+## 10. Cach chay nhanh
 
-### 1. **Performance Issues**
-- **Symptom**: High SSD usage causing the application to hang.
-- **Solution**: Optimize image processing and database interactions.
+### 10.1 UI
+```bash
+streamlit run streamlit_app.py
+```
 
-### 2. **AttributeError in `image_enhancement`**
-- **Symptom**: `AttributeError: module 'image_enhancement' has no attribute 'enhance'`.
-- **Solution**: Ensure the `enhance` function is implemented in `image_enhancement.py`.
+### 10.2 Service demo
+```bash
+python -m src.pipeline.service
+```
 
-### 3. **Feature Vector Errors**
-- **Symptom**: `Processing failed: 'feature_vector'`.
-- **Solution**: Verify the structure of the `feature_vector` and ensure it matches the expected format.
+### 10.3 Scripts
+```bash
+python scripts/check_model.py
+python scripts/make_mevid_subset_fixed.py
+```
 
----
-
-## Future Improvements
-- Refactor code to improve modularity and readability.
-- Add detailed comments in both English and Vietnamese.
-- Optimize database queries and image processing pipelines.
-- Implement better error handling and logging mechanisms.
-
----
-
-## References
-- [Project README](./README.md)
-- [Refactor Guide](./REFACTOR_GUIDE.md)
