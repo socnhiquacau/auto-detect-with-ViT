@@ -3,10 +3,8 @@ import traceback
 import cv2
 import numpy as np
 import torch
-from torchvision import transforms
-from PIL import Image
 import requests
-from typing import List, Dict, Tuple
+from typing import Dict
 import os
 import uuid
 from datetime import datetime
@@ -32,7 +30,15 @@ class VideoProcessor:
     6. Save detection results with metadata
     """
 
-    def __init__(self, db, output_dir: str, temp_dir: str, yolo_path: str = None, vit_path: str = None):
+    def __init__(
+        self,
+        db,
+        output_dir: str,
+        temp_dir: str,
+        yolo_path: str = None,
+        vit_path: str = None,
+        classifier_path: str = None,
+    ):
         """
         Initialize VideoProcessor with database connection and model paths.
 
@@ -48,9 +54,14 @@ class VideoProcessor:
         self.temp_dir = temp_dir
         
         # Use unified DataLoader for consistent model initialization from models/ directory
-        self.data_loader = DataLoader(yolo_path=yolo_path, vit_path=vit_path)
+        self.data_loader = DataLoader(
+            yolo_path=yolo_path,
+            vit_path=vit_path,
+            classifier_path=classifier_path,
+        )
         self.yolo_model = self.data_loader.get_yolo_model()
         self.feature_extractor = self.data_loader.get_feature_extractor()
+        self.known_unknown_classifier = None
 
         # Initialize image quality enhancement
         self.image_enhancer = ImageEnhancer()
@@ -60,7 +71,21 @@ class VideoProcessor:
         self.known_person_threshold = KNOWN_PERSON_THRESHOLD
         self.frame_extraction_fps = FRAME_EXTRACTION_FPS
 
-    async def process_video_from_url(self, url: str, video_name: str) -> Dict:
+    def _get_known_unknown_classifier(self):
+        if self.known_unknown_classifier is None:
+            self.known_unknown_classifier = self.data_loader.get_known_unknown_classifier()
+        return self.known_unknown_classifier
+
+    @staticmethod
+    def _build_track_url(frame_filename: str) -> str:
+        return f"/static/detected/{frame_filename}"
+
+    async def process_video_from_url(
+        self,
+        url: str,
+        video_name: str,
+        use_classification_model: bool = False,
+    ) -> Dict:
         """
         Download video from URL and process it through the pipeline.
 
@@ -81,9 +106,18 @@ class VideoProcessor:
                 f.write(chunk)
         print(f"✅ Video downloaded to: {video_path}")
 
-        return await self.process_video_file(video_path, video_name)
+        return await self.process_video_file(
+            video_path,
+            video_name,
+            use_classification_model=use_classification_model,
+        )
     
-    async def process_video_file(self, video_path: str, video_name: str) -> Dict:
+    async def process_video_file(
+        self,
+        video_path: str,
+        video_name: str,
+        use_classification_model: bool = False,
+    ) -> Dict:
         """
         Main video processing pipeline:
         1. Extract frames at target FPS rate
@@ -157,10 +191,12 @@ class VideoProcessor:
                                 video_name,
                                 timestamp,
                                 frame_count,
-                                extracted_count
+                                extracted_count,
+                                use_classification_model=use_classification_model,
                             )
-                            detections.append(detection)
-                            extracted_count += 1
+                            if detection is not None:
+                                detections.append(detection)
+                                extracted_count += 1
                 
                 # Log progress every 10 detections
                 if extracted_count % 10 == 0:
@@ -175,6 +211,8 @@ class VideoProcessor:
             "job_id": job_id,
             "video_id": video_id,
             "video_name": video_name,
+            "recognition_mode": "classification" if use_classification_model else "similarity",
+            "use_classification_model": use_classification_model,
             "processed_at": datetime.now().isoformat(),
             "total_frames": total_frames,
             "processed_frames": frame_count,
@@ -199,7 +237,8 @@ class VideoProcessor:
             video_name: str,
             timestamp: float,
             frame_number: int,
-            detection_index: int
+            detection_index: int,
+            use_classification_model: bool = False,
     ) -> Dict:
 
         # ========== 1. Extract bbox ==========
@@ -220,32 +259,39 @@ class VideoProcessor:
         if person_img.size == 0:
             return None
 
-        # ========== 3. Extract feature (SAFE) ==========
-        with torch.no_grad():
-            feat = self.feature_extractor.extract(person_img)
+        feat = None
 
-        if feat is None:
-            return None
-
-        if isinstance(feat, torch.Tensor):
-            feat = feat.detach().cpu().numpy()
-        elif isinstance(feat, list):
-            feat = np.array(feat, dtype=np.float32)
+        if use_classification_model:
+            classifier = self._get_known_unknown_classifier()
+            match_result = classifier.predict(person_img)
         else:
-            feat = np.asarray(feat, dtype=np.float32)
+            # ========== 3. Extract feature (SAFE) ==========
+            with torch.no_grad():
+                feat = self.feature_extractor.extract(person_img)
 
-        feat = feat.flatten()
-        if feat.size == 0:
-            return None
+            if feat is None:
+                return None
 
-        # ========== 4. Matching ==========
-        match_result = await self._find_matching_person(feat)
+            if isinstance(feat, torch.Tensor):
+                feat = feat.detach().cpu().numpy()
+            elif isinstance(feat, list):
+                feat = np.array(feat, dtype=np.float32)
+            else:
+                feat = np.asarray(feat, dtype=np.float32)
+
+            feat = feat.flatten()
+            if feat.size == 0:
+                return None
+
+            # ========== 4. Matching ==========
+            match_result = await self._find_matching_person(feat)
 
         # ========== 5. Save image ==========
         detection_id = str(uuid.uuid4())
         frame_filename = f"{video_id}_{detection_index}_{detection_id}.jpg"
         frame_path = os.path.join(self.output_dir, frame_filename)
         cv2.imwrite(frame_path, person_img)
+        track_url = self._build_track_url(frame_filename)
 
         detection = {
             "detection_id": detection_id,
@@ -259,14 +305,24 @@ class VideoProcessor:
                 "height": y2 - y1
             },
             "confidence": confidence,
-            "feature_vector": feat.tolist(),  # 1 vector cho detection
+            "feature_vector": feat.tolist() if feat is not None else None,
             "saved_frame_path": frame_path,
+            "track_url": track_url,
+            "recognition_mode": "classification" if use_classification_model else "similarity",
             "is_known": match_result.get("is_known", False),
+            "display_label": "quen" if match_result.get("is_known", False) else "lạ",
+            "classification_label": match_result.get("predicted_class"),
+            "classification_confidence": match_result.get("confidence"),
             "matched_person_id": match_result.get("person_id"),
             "matched_person_name": match_result.get("person_name"),
             "similarity_score": match_result.get("similarity_score"),
             "detected_at": datetime.now().isoformat()
         }
+
+        if use_classification_model:
+            detection["matched_person_id"] = None
+            detection["matched_person_name"] = None
+            detection["similarity_score"] = None
 
         try:
             await self.db.save_detection(detection)
@@ -285,12 +341,16 @@ class VideoProcessor:
         best_similarity = -1.0
 
         for person in known_persons:
-            feature_list = person.get("feature_vectors", [])
+            feature_list = person.get("feature_vectors")
+            if feature_list is None and person.get("feature_vector") is not None:
+                feature_list = [person["feature_vector"]]
             if not feature_list:
                 continue
 
             for stored_vec in feature_list:
                 stored_vec = np.array(stored_vec, dtype=np.float32)
+                if stored_vec.shape != feature_vector.shape:
+                    continue
 
                 similarity = self._cosine_similarity(feature_vector, stored_vec)
 

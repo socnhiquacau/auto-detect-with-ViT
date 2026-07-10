@@ -1,7 +1,8 @@
 # database.py
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 class Database:
     """MongoDB database operations"""
@@ -37,20 +38,28 @@ class Database:
         result = await self.detections.delete_many({"video_id": video_id})
         return result.deleted_count
     
-    async def add_known_person(self, person_id: str, feature_vector: List[float], name: Optional[str] = None) -> str:
-        """Add a known person's feature vector to database"""
+    async def add_known_person(
+        self,
+        person_id: str,
+        feature_vector: List[float],
+        name: Optional[str] = None,
+    ) -> str:
+        """Add a feature vector to a known person, creating the person if needed."""
+        now = datetime.now(timezone.utc).isoformat()
         person = {
             "person_id": person_id,
             "name": name or "Unknown",
-            "feature_vector": feature_vector,
-            "added_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
+            "updated_at": now,
         }
-        
-        result = await self.known_persons.update_one(
+
+        await self.known_persons.update_one(
             {"person_id": person_id},
-            {"$set": person},
-            upsert=True
+            {
+                "$set": person,
+                "$setOnInsert": {"added_at": now},
+                "$addToSet": {"feature_vectors": feature_vector},
+            },
+            upsert=True,
         )
         return person_id
     

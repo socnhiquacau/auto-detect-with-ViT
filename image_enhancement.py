@@ -5,20 +5,31 @@ import numpy as np
 class ImageEnhancer:
     """Image enhancement for better detection quality"""
     
-    def __init__(self):
+    def __init__(self, gamma: float = 1.2):
+        if gamma <= 0:
+            raise ValueError("gamma must be greater than zero")
+
+        self.gamma = gamma
         # CLAHE parameters
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
-        def _gamma_correct(self, img: np.ndarray, gamma=1.2):
-            """Apply gamma correction to the image"""
-            inv = 1.0 / gamma
-            table = np.array([(i / 255.0) ** inv * 255 for i in range(256)]).astype("uint8")
-            return cv2.LUT(img, table)
+    @staticmethod
+    def _gamma_correct(image: np.ndarray, gamma: float) -> np.ndarray:
+        """Apply gamma correction to an image."""
+        inverse_gamma = 1.0 / gamma
+        lookup_table = np.array(
+            [(value / 255.0) ** inverse_gamma * 255 for value in range(256)],
+            dtype=np.uint8,
+        )
+        return cv2.LUT(image, lookup_table)
 
     def enhance(self, image: np.ndarray) -> np.ndarray:
         """Apply all enhancement techniques to the image"""
 
-        gamma_corrected = self._gamma_correct(image, gamma=1.2)
+        if image is None or image.size == 0:
+            raise ValueError("image must be a non-empty numpy array")
+
+        gamma_corrected = self._gamma_correct(image, gamma=self.gamma)
 
         # # 1. Denoise - Bilateral filter (preserves edges)
         # denoised = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)

@@ -21,6 +21,7 @@ KNOWN_PERSON_THRESHOLD = float(os.getenv("KNOWN_PERSON_THRESHOLD", "0.95"))
 FRAME_EXTRACTION_FPS = int(os.getenv("FRAME_EXTRACTION_FPS", "2"))
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolov8_person_detection.pt")
 VIT_MODEL_PATH = os.getenv("VIT_MODEL_PATH", "models/vit_final_model.pth")
+CLASSIFIER_MODEL_PATH = os.getenv("CLASSIFIER_MODEL_PATH", "best_vit.pth")
 
 # =========================
 # RESIZE + PAD
@@ -377,6 +378,7 @@ class DataLoader:
     def __init__(self,
                  yolo_path: str = None,
                  vit_path: str = None,
+                 classifier_path: str = None,
                  device: torch.device = None):
         """
         Initialize DataLoader with model paths from environment or parameters.
@@ -389,10 +391,12 @@ class DataLoader:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.yolo_path = yolo_path or YOLO_MODEL_PATH
         self.vit_path = vit_path or VIT_MODEL_PATH
+        self.classifier_path = classifier_path or CLASSIFIER_MODEL_PATH
 
         # Initialize model cache
         self._yolo_model = None
         self._feature_extractor = None
+        self._known_unknown_classifier = None
 
     def get_yolo_model(self):
         """
@@ -432,6 +436,29 @@ class DataLoader:
             )
             print("✅ FeatureExtractor loaded successfully")
         return self._feature_extractor
+
+    def get_known_unknown_classifier(self, model_name: str = None):
+        """
+        Get classifier for known/unknown prediction.
+        Lazy loads on first access.
+
+        Args:
+            model_name: Optional specific model filename inside models/
+
+        Returns:
+            KnownUnknownClassifier: Classifier instance
+        """
+        if self._known_unknown_classifier is None:
+            from known_unknown_classifier import KnownUnknownClassifier
+
+            model_to_load = model_name or self.classifier_path
+            print(f"📦 Loading KnownUnknownClassifier with model: {model_to_load}")
+            self._known_unknown_classifier = KnownUnknownClassifier(
+                model_name=model_to_load,
+                device=self.device,
+            )
+            print("✅ KnownUnknownClassifier loaded successfully")
+        return self._known_unknown_classifier
 
     @staticmethod
     def preprocess_image(img_path: str, device: torch.device = None) -> torch.Tensor:

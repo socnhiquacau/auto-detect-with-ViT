@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
@@ -6,6 +8,7 @@ from typing import Optional, List
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
@@ -20,16 +23,18 @@ load_dotenv()
 # =========================
 # CONFIGURATION FROM ENVIRONMENT VARIABLES
 # =========================
-# MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:admin123@127.0.0.1:27018/video_detection_db?authSource=admin")
-MONGODB_URL = "mongodb://admin:admin123@127.0.0.1:27017/video_detection_db?authSource=admin"
+MONGODB_URL = os.getenv(
+    "MONGODB_URL",
+    "mongodb://admin:admin123@127.0.0.1:27017/video_detection_db?authSource=admin",
+)
 DATABASE_NAME = os.getenv("DATABASE_NAME", "video_detection_db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output/detected")
 TEMP_DIR = os.getenv("TEMP_DIR", "temp")
 
 # Ensure directories exist
-for dir_path in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
-    os.makedirs(dir_path, exist_ok=True)
+for directory in (UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR):
+    Path(directory).mkdir(parents=True, exist_ok=True)
 
 # Global instances
 db = None
@@ -74,6 +79,7 @@ app = FastAPI(
     title="Video Person Detection & Recognition API",
     lifespan=lifespan
 )
+app.mount("/static/detected", StaticFiles(directory=OUTPUT_DIR), name="static-detected")
 
 
 # =========================
@@ -84,6 +90,7 @@ class VideoURLRequest(BaseModel):
     """Request model for processing video from URL"""
     url: HttpUrl
     video_name: Optional[str] = None
+    use_classification_model: bool = False
 
 
 class FeatureVectorRequest(BaseModel):
@@ -99,8 +106,8 @@ async def root():
         "message": "Video Person Detection & Recognition API",
         "version": "1.0.0",
         "endpoints": {
-            "POST /process/upload": "Upload and process video file",
-            "POST /process/url": "Process video from URL",
+            "POST /process/upload": "Upload and process video file (?use_classification_model=true)",
+            "POST /process/url": "Process video from URL (body.use_classification_model=true)",
             "GET /results/{job_id}": "Get processing results",
             "GET /detections/{video_id}": "Get all detections for a video",
             "POST /features/add": "Add known person feature vector",
@@ -110,14 +117,29 @@ async def root():
 
 
 @app.post("/process/upload")
-async def process_uploaded_video():
+async def process_uploaded_video(
+    file: UploadFile = File(...),
+    use_classification_model: bool = False,
+):
     """Upload and process video file"""
     try:
-        # Use hardcoded file path
-        video_path = "temp/bali.mp4"
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Missing uploaded filename")
+
+        suffix = Path(file.filename).suffix.lower() or ".mp4"
+        saved_name = f"{uuid.uuid4().hex}{suffix}"
+        video_path = os.path.join(UPLOAD_DIR, saved_name)
+
+        file_bytes = await file.read()
+        with open(video_path, "wb") as f:
+            f.write(file_bytes)
 
         # Process video
-        result = await video_processor.process_video_file(video_path, "bali.mp4")
+        result = await video_processor.process_video_file(
+            video_path,
+            file.filename,
+            use_classification_model=use_classification_model,
+        )
 
         return JSONResponse({
             "status": "success",
@@ -127,8 +149,10 @@ async def process_uploaded_video():
             "results": result
         })
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {exc}") from exc
 
 
 @app.post("/process/url")
@@ -136,7 +160,11 @@ async def process_video_from_url(request: VideoURLRequest):
     """Process video from URL"""
     try:
         video_name = request.video_name or f"video_{datetime.now().timestamp()}"
-        result = await video_processor.process_video_from_url(str(request.url), video_name)
+        result = await video_processor.process_video_from_url(
+            str(request.url),
+            video_name,
+            use_classification_model=request.use_classification_model,
+        )
 
         return JSONResponse({
             "status": "success",
@@ -146,8 +174,10 @@ async def process_video_from_url(request: VideoURLRequest):
             "results": result
         })
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {exc}") from exc
 
 
 @app.get("/results/{job_id}")
@@ -184,8 +214,10 @@ async def add_known_person(request: FeatureVectorRequest):
             "message": "Known person added successfully",
             "person_id": request.person_id
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to add person: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to add person: {exc}") from exc
 
 
 @app.get("/features/list")
